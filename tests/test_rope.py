@@ -18,7 +18,9 @@ def test_basic_correctness(rope_module):
     batch, seq_len, n_head, head_dim = 2, 4, 8, 16
 
     input = np.random.randn(batch, seq_len, n_head, head_dim).astype(np.float32)
-    positions = np.arange(seq_len).reshape(1, seq_len).repeat(batch, axis=0).astype(np.int64)
+    positions = (
+        np.arange(seq_len).reshape(1, seq_len).repeat(batch, axis=0).astype(np.int64)
+    )
     freq_base = np.float32(10000.0)
     freq_scale = np.float32(1.0)
 
@@ -67,7 +69,9 @@ def test_different_freq_base(rope_module):
     batch, seq_len, n_head, head_dim = 2, 4, 4, 16
 
     input = np.random.randn(batch, seq_len, n_head, head_dim).astype(np.float32)
-    positions = np.arange(seq_len).reshape(1, seq_len).repeat(batch, axis=0).astype(np.int64)
+    positions = (
+        np.arange(seq_len).reshape(1, seq_len).repeat(batch, axis=0).astype(np.int64)
+    )
     freq_base = np.float32(1000000.0)  # Mixtral-style
     freq_scale = np.float32(1.0)
 
@@ -83,7 +87,9 @@ def test_freq_scale(rope_module):
     batch, seq_len, n_head, head_dim = 2, 4, 4, 8
 
     input = np.random.randn(batch, seq_len, n_head, head_dim).astype(np.float32)
-    positions = np.arange(seq_len).reshape(1, seq_len).repeat(batch, axis=0).astype(np.int64)
+    positions = (
+        np.arange(seq_len).reshape(1, seq_len).repeat(batch, axis=0).astype(np.int64)
+    )
     freq_base = np.float32(10000.0)
     freq_scale = np.float32(0.5)
 

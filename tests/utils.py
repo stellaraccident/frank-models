@@ -3,9 +3,13 @@
 Provides IREE compilation and runtime helpers.
 """
 
+import shutil
+import subprocess
+import tempfile
+
 import numpy as np
 from pathlib import Path
-from typing import List, Union
+from typing import List, Optional, Union
 
 import iree.compiler
 from iree.runtime import (
@@ -36,12 +40,48 @@ DRIVER_MAP = {
 class IREERuntime:
     """Bundle of IREE runtime components."""
 
-    def __init__(self, backend: str = "llvm-cpu"):
+    def __init__(
+        self,
+        backend: str = "llvm-cpu",
+        iree_tools_dir: Optional[Path] = None,
+    ):
         self.backend = backend
+        self._iree_tools_dir = iree_tools_dir
         driver = DRIVER_MAP.get(backend, "local-task")
         self.instance = VmInstance()
         self.device = get_device(driver)
         self.hal_module = create_hal_module(self.instance, self.device)
+
+    def iree_tool_path(self, name: str) -> Path:
+        """Get path to an IREE tool binary.
+
+        Args:
+            name: Tool name (e.g., "iree-link")
+
+        Returns:
+            Path to the tool binary
+
+        Raises:
+            FileNotFoundError: If tool cannot be found
+        """
+        if self._iree_tools_dir is not None:
+            tool_path = self._iree_tools_dir / name
+            if tool_path.exists():
+                return tool_path
+            raise FileNotFoundError(
+                f"IREE tool '{name}' not found in {self._iree_tools_dir}. "
+                f"Check --iree-tools-dir option."
+            )
+
+        tool_path = shutil.which(name)
+        if tool_path is not None:
+            return Path(tool_path)
+
+        raise FileNotFoundError(
+            f"IREE tool '{name}' not found in PATH. "
+            f"Use --iree-tools-dir to specify the tools directory, "
+            f"or add the IREE build tools directory to PATH."
+        )
 
 
 # Component directory
@@ -192,3 +232,37 @@ def assert_close(actual, expected, rtol=1e-5, atol=1e-6):
         rtol=rtol,
         atol=atol,
     )
+
+
+def link_and_compile(
+    main_path: str,
+    library_paths: List[str],
+    rt: IREERuntime,
+) -> IREEModule:
+    """Link MLIR modules with iree-link, then compile.
+
+    Args:
+        main_path: Primary module (relative to COMPONENTS_DIR)
+        library_paths: Dependency modules to link
+        rt: IREERuntime instance
+
+    Returns:
+        Compiled IREEModule with all functions available
+    """
+    iree_link = rt.iree_tool_path("iree-link")
+    main_full = COMPONENTS_DIR / main_path
+
+    # Build iree-link command
+    cmd = [str(iree_link), str(main_full)]
+    for lib in library_paths:
+        cmd.extend(["--link-module", str(COMPONENTS_DIR / lib)])
+
+    with tempfile.NamedTemporaryFile(suffix=".mlir", delete=False) as f:
+        linked_path = f.name
+    cmd.extend(["-o", linked_path])
+
+    subprocess.run(cmd, check=True)
+
+    linked_source = Path(linked_path).read_text()
+    Path(linked_path).unlink()  # cleanup
+    return compile_mlir(linked_source, rt)
