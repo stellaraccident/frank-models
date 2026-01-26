@@ -1,0 +1,27 @@
+[project]
+name = "frank-models"
+version = "0.1.0"
+description = "AI-assisted model authoring for IREE"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "pytest>=7.0",
+    "iree-base-compiler",
+    "iree-base-runtime",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest-xdist",
+    "black",
+    "ruff",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "I"]
