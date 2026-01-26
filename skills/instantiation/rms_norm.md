@@ -17,6 +17,7 @@ producing specialized MLIR with concrete shapes and parameters.
 ## Output
 
 Specialized MLIR module with:
+
 - Concrete tensor shapes (hidden_dim specialized, batch dynamic)
 - Model-specific function name
 - Proper dtype throughout
@@ -38,11 +39,13 @@ util.func public @rms_norm_linalg(
 ### Step 2: Understand the Algorithm
 
 RMSNorm computes:
+
 ```
 output = (x / sqrt(mean(x^2, axis=-1) + eps)) * weight
 ```
 
 Key operations:
+
 1. Square input elementwise
 2. Reduce (sum) over hidden_dim axis
 3. Divide by hidden_dim for mean
@@ -56,17 +59,20 @@ Key operations:
 For a model like Llama-7B (hidden_dim=4096):
 
 **Change function name:**
+
 ```mlir
 func.func @llama_7b_rms_norm(...)
 ```
 
 **Keep dynamic batch, specialize hidden_dim:**
+
 ```mlir
 %input: tensor<?x4096xf32>
 %weight: tensor<4096xf32>
 ```
 
 **Specialize the dim constant (if using func.func with static shapes):**
+
 ```mlir
 %dim1_f32 = arith.constant 4096.0 : f32
 ```
@@ -95,6 +101,7 @@ module @test_llama_7b_rms_norm {
 ### Step 5: Verify
 
 Run the specialized module through tests:
+
 ```bash
 pytest tests/test_rms_norm.py -v
 ```
@@ -102,6 +109,7 @@ pytest tests/test_rms_norm.py -v
 ## Example Specialization
 
 Given:
+
 ```yaml
 model: llama-7b
 hidden_dim: 4096
@@ -110,6 +118,7 @@ eps: 1e-5
 ```
 
 Produce test MLIR:
+
 ```mlir
 module @llama_7b_rms_norm {
   func.func @rms_norm(

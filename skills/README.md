@@ -5,11 +5,13 @@ This directory contains task-oriented documentation for AI agents working with f
 ## Skill Categories
 
 ### instantiation/
+
 Skills for creating specialized MLIR from templates.
 
 - **rms_norm.md** - Instantiate RMSNorm for specific models
 
 ### oracle_generation/
+
 Skills for creating NumPy reference implementations from MLIR.
 
 - **from_mlir.md** - Generate numpy oracle from MLIR component

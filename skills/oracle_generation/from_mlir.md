@@ -20,6 +20,7 @@ that can be used as an oracle for testing.
 ### Step 1: Identify Function Signature
 
 From MLIR like:
+
 ```mlir
 util.func public @rms_norm_linalg(
     %input: tensor<?x?xf32>,
@@ -29,6 +30,7 @@ util.func public @rms_norm_linalg(
 ```
 
 Create Python signature:
+
 ```python
 def rms_norm(
     x: np.ndarray,        # corresponds to %input
@@ -48,6 +50,7 @@ For each `linalg.generic`:
 #### Example: Sum of Squares Reduction
 
 MLIR:
+
 ```mlir
 %sum_sq = linalg.generic {
   indexing_maps = [
@@ -64,12 +67,14 @@ MLIR:
 ```
 
 Analysis:
+
 - Input shape: `(d0, d1)` - 2D
 - Output shape: `(d0)` - 1D, so d1 is reduced
 - Body: square then accumulate
 - iterator_types: d1 is "reduction"
 
 NumPy:
+
 ```python
 # d1 (axis=-1) is reduced
 sum_sq = np.sum(x * x, axis=-1, keepdims=True)
@@ -80,6 +85,7 @@ sum_sq = np.sum(x * x, axis=-1, keepdims=True)
 MLIR indexing maps show exactly how tensors broadcast.
 
 `affine_map<(d0, d1) -> (d1)>` means:
+
 - Input is 1D with size d1
 - It broadcasts across d0
 
@@ -95,6 +101,7 @@ but you may need to ensure the weight has the right shape.
 ### Step 5: Document the Correspondence
 
 Add docstrings that reference the MLIR:
+
 ```python
 def rms_norm(x, weight, eps=1e-6):
     """RMS Normalization.
@@ -113,29 +120,31 @@ def rms_norm(x, weight, eps=1e-6):
 
 ## Translation Table
 
-| MLIR | NumPy |
-|------|-------|
-| `arith.mulf` | `*` |
-| `arith.addf` | `+` |
-| `arith.subf` | `-` |
-| `arith.divf` | `/` |
-| `arith.negf` | `-x` (unary) |
-| `math.sqrt` | `np.sqrt` |
-| `math.exp` | `np.exp` |
-| `math.log` | `np.log` |
-| `math.cos` | `np.cos` |
-| `math.sin` | `np.sin` |
-| `math.tanh` | `np.tanh` |
-| `arith.maximumf` | `np.maximum` |
-| `arith.minimumf` | `np.minimum` |
+| MLIR                      | NumPy                       |
+| ------------------------- | --------------------------- |
+| `arith.mulf`              | `*`                         |
+| `arith.addf`              | `+`                         |
+| `arith.subf`              | `-`                         |
+| `arith.divf`              | `/`                         |
+| `arith.negf`              | `-x` (unary)                |
+| `math.sqrt`               | `np.sqrt`                   |
+| `math.exp`                | `np.exp`                    |
+| `math.log`                | `np.log`                    |
+| `math.cos`                | `np.cos`                    |
+| `math.sin`                | `np.sin`                    |
+| `math.tanh`               | `np.tanh`                   |
+| `arith.maximumf`          | `np.maximum`                |
+| `arith.minimumf`          | `np.minimum`                |
 | `linalg.fill` + reduction | `np.zeros` or explicit init |
 
 ## Common Patterns
 
 ### Softmax
+
 ```mlir
 // MLIR: exp(x - max(x)) / sum(exp(x - max(x)))
 ```
+
 ```python
 def softmax(x, axis=-1):
     x_max = np.max(x, axis=axis, keepdims=True)
@@ -144,20 +153,25 @@ def softmax(x, axis=-1):
 ```
 
 ### SiLU (Swish)
+
 ```mlir
 // MLIR: x * sigmoid(x) where sigmoid = 1 / (1 + exp(-x))
 ```
+
 ```python
 def silu(x):
     return x / (1 + np.exp(-x))
 ```
+
 Or equivalently:
+
 ```python
 def silu(x):
     return x * (1 / (1 + np.exp(-x)))
 ```
 
 ### RoPE (Rotary Position Embeddings)
+
 Complex - involves cos/sin applied to dimension pairs. See the
 MLIR in `components/positional/rope.mlir` for the full pattern.
 
@@ -170,6 +184,7 @@ The key to translating `linalg.generic` is understanding which dimensions are re
 3. Map to numpy `axis` parameter
 
 Example:
+
 ```mlir
 iterator_types = ["parallel", "parallel", "reduction"]
 # d0, d1 are parallel (preserved), d2 is reduced
@@ -179,6 +194,7 @@ iterator_types = ["parallel", "parallel", "reduction"]
 ## Validation
 
 After writing oracle:
+
 1. Write test that compiles MLIR and runs both
 2. Use `np.testing.assert_allclose` with appropriate tolerance
 3. Test edge cases (zeros, large values, NaN handling)

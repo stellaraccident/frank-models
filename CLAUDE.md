@@ -8,11 +8,13 @@ AI-assisted model authoring targeting IREE compilation.
 **The DSL is the LLM skill, not a compiler dialect.**
 
 You are working with:
+
 1. **MLIR templates** in `components/` - parameterized, clean interfaces
 2. **NumPy oracles** in `oracles/` - reference implementations for validation
 3. **Skills** in `skills/` - documentation describing transformation tasks
 
 Your role is to:
+
 - Understand MLIR templates and their semantics
 - Generate specialized variants from templates
 - Create numpy oracles that match MLIR semantics exactly
@@ -39,6 +41,7 @@ Components in `components/` use these patterns:
 4. **flow.dispatch.region**: Explicit fusion boundary (when present)
 
 Example signature to understand:
+
 ```mlir
 util.func public @rms_norm_linalg(
     %input: tensor<?x?xf32>,      // [batch, hidden_dim]
@@ -72,16 +75,16 @@ When asked to create a numpy oracle from MLIR:
 
 ## MLIR to NumPy Translation Patterns
 
-| MLIR Pattern | NumPy Equivalent |
-|--------------|------------------|
-| `linalg.fill` with reduction | `np.zeros()` initialization |
-| `arith.mulf` in generic | `*` (elementwise) |
-| `arith.addf` in generic | `+` (elementwise) |
-| `arith.divf` in generic | `/` (elementwise) |
-| `math.sqrt` | `np.sqrt()` |
-| `math.exp` | `np.exp()` |
-| Reduction `iterator_types = ["parallel", "reduction"]` | `axis=-1` or explicit axis |
-| `affine_map<(d0, d1) -> (d0)>` for output | Reduction over d1 |
+| MLIR Pattern                                           | NumPy Equivalent            |
+| ------------------------------------------------------ | --------------------------- |
+| `linalg.fill` with reduction                           | `np.zeros()` initialization |
+| `arith.mulf` in generic                                | `*` (elementwise)           |
+| `arith.addf` in generic                                | `+` (elementwise)           |
+| `arith.divf` in generic                                | `/` (elementwise)           |
+| `math.sqrt`                                            | `np.sqrt()`                 |
+| `math.exp`                                             | `np.exp()`                  |
+| Reduction `iterator_types = ["parallel", "reduction"]` | `axis=-1` or explicit axis  |
+| `affine_map<(d0, d1) -> (d0)>` for output              | Reduction over d1           |
 
 ## Running Tests
 
@@ -130,12 +133,13 @@ This runs:
 
 - MLIR files: lowercase_with_underscores.mlir
 - Python files: lowercase_with_underscores.py
-- Test files: test_<component>.py
+- Test files: test\_<component>.py
 - Skill docs: lowercase.md
 
 ## Error Tolerance
 
 For numerical comparison:
+
 - f32: `rtol=1e-5, atol=1e-6`
 - f16: `rtol=1e-3, atol=1e-4`
 - Quantized: depends on format, documented per-test

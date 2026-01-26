@@ -7,3 +7,4 @@ dist/
 build/
 .eggs/
 *.vmfb
+node_modules/
