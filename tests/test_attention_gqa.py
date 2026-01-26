@@ -3,8 +3,8 @@
 Note: Current implementation requires n_head == n_head_kv (MHA).
 GQA/MQA support (n_head > n_head_kv) is future work.
 
-XFAIL: Compiler crashes with dynamic shapes + collapse/expand around
-iree_linalg_ext.attention. Tracked for fix.
+XFAIL: Compiler crashes with dynamic shapes + iree_linalg_ext.attention.
+https://github.com/iree-org/iree/issues/23277
 """
 
 import numpy as np
@@ -16,7 +16,7 @@ from oracles.attention import attention_gqa as attention_oracle
 
 @pytest.fixture(scope="module")
 def attention_module(rt):
-    pytest.xfail("IREE compiler crash: dynamic shapes + attention op")
+    pytest.xfail("iree-org/iree#23277: dynamic shapes + attention op")
     return compile_component("attention/attention_gqa.mlir", rt)
 
 
