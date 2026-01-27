@@ -28,6 +28,7 @@ This project originated because it was noted that modern coding agents are _very
 | `embedding/embedding_lookup` | Token → embedding via gather        | `iree_linalg_ext.gather`                        |
 | `position/rope`              | Rotary Position Embeddings          | `linalg.generic`                                |
 | `attention/attention_gqa`    | Grouped Query Attention             | `iree_linalg_ext.attention`                     |
+| `attention/attention_block`  | Full attention block (QKV + RoPE)   | composition: `rope`, `attention_gqa`            |
 | `moe/mul_mat_id`             | Expert-selected matrix multiply     | `iree_linalg_ext.gather`, `linalg.batch_matmul` |
 | `moe/moe_ffn_block`          | Full MoE FFN with routing           | `iree_linalg_ext.topk`, `linalg.softmax`        |
 
@@ -75,7 +76,7 @@ See [CLAUDE.md](CLAUDE.md) for detailed instructions on working with this codeba
 
 ## Known Issues
 
-- `attention_gqa` is xfailed due to [iree-org/iree#23277](https://github.com/iree-org/iree/issues/23277) (dynamic shapes + attention op on CPU)
+- `attention_gqa` and `attention_block` are xfailed due to [iree-org/iree#23277](https://github.com/iree-org/iree/issues/23277) (dynamic shapes + attention op on CPU)
 
 ## License
 
