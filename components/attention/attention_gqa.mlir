@@ -5,8 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 // Multi-Head Attention using iree_linalg_ext.attention.
-// Note: Currently requires n_head == n_head_kv (MHA, not GQA).
-// GQA support requires explicit KV head repetition (future work).
+// Supports GQA: n_head_kv may differ from n_head (Q heads).
+// KV heads are repeated to match Q heads via the attention indexing maps.
 //
 // Usage:
 //   %output = call @attention_gqa(%query, %key, %value, %scale)
@@ -30,6 +30,7 @@ module @attention_components {
     %seq_len = tensor.dim %query, %c1 : tensor<?x?x?x?xf32>
     %n_head = tensor.dim %query, %c2 : tensor<?x?x?x?xf32>
     %head_dim = tensor.dim %query, %c3 : tensor<?x?x?x?xf32>
+    %n_head_kv = tensor.dim %key, %c2 : tensor<?x?x?x?xf32>
 
     // Transpose Q/K/V from [batch, seq, n_head, head_dim] to [batch, n_head, seq, head_dim]
     %q_transposed_init = tensor.empty(%batch, %n_head, %seq_len, %head_dim) : tensor<?x?x?x?xf32>
@@ -44,7 +45,7 @@ module @attention_components {
       linalg.yield %in : f32
     } -> tensor<?x?x?x?xf32>
 
-    %k_transposed_init = tensor.empty(%batch, %n_head, %seq_len, %head_dim) : tensor<?x?x?x?xf32>
+    %k_transposed_init = tensor.empty(%batch, %n_head_kv, %seq_len, %head_dim) : tensor<?x?x?x?xf32>
     %k_transposed = linalg.generic {
       indexing_maps = [
         affine_map<(d0, d1, d2, d3) -> (d0, d2, d1, d3)>,
@@ -56,7 +57,7 @@ module @attention_components {
       linalg.yield %in : f32
     } -> tensor<?x?x?x?xf32>
 
-    %v_transposed_init = tensor.empty(%batch, %n_head, %seq_len, %head_dim) : tensor<?x?x?x?xf32>
+    %v_transposed_init = tensor.empty(%batch, %n_head_kv, %seq_len, %head_dim) : tensor<?x?x?x?xf32>
     %v_transposed = linalg.generic {
       indexing_maps = [
         affine_map<(d0, d1, d2, d3) -> (d0, d2, d1, d3)>,
@@ -68,13 +69,50 @@ module @attention_components {
       linalg.yield %in : f32
     } -> tensor<?x?x?x?xf32>
 
+    // GQA: repeat K/V heads to match Q heads.
+    // K/V are [batch, n_head_kv, seq, head_dim], repeat along dim 1 to get [batch, n_head, seq, head_dim].
+    %repeat_factor = arith.divui %n_head, %n_head_kv : index
+    %k_repeated_init = tensor.empty(%batch, %n_head, %seq_len, %head_dim) : tensor<?x?x?x?xf32>
+    %k_repeated = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
+      ],
+      iterator_types = ["parallel", "parallel", "parallel", "parallel"]
+    } outs(%k_repeated_init : tensor<?x?x?x?xf32>) {
+    ^bb0(%out: f32):
+      %i1 = linalg.index 1 : index
+      %kv_idx = arith.divui %i1, %repeat_factor : index
+      %i0 = linalg.index 0 : index
+      %i2 = linalg.index 2 : index
+      %i3 = linalg.index 3 : index
+      %val = tensor.extract %k_transposed[%i0, %kv_idx, %i2, %i3] : tensor<?x?x?x?xf32>
+      linalg.yield %val : f32
+    } -> tensor<?x?x?x?xf32>
+
+    %v_repeated_init = tensor.empty(%batch, %n_head, %seq_len, %head_dim) : tensor<?x?x?x?xf32>
+    %v_repeated = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
+      ],
+      iterator_types = ["parallel", "parallel", "parallel", "parallel"]
+    } outs(%v_repeated_init : tensor<?x?x?x?xf32>) {
+    ^bb0(%out: f32):
+      %i1 = linalg.index 1 : index
+      %kv_idx = arith.divui %i1, %repeat_factor : index
+      %i0 = linalg.index 0 : index
+      %i2 = linalg.index 2 : index
+      %i3 = linalg.index 3 : index
+      %val = tensor.extract %v_transposed[%i0, %kv_idx, %i2, %i3] : tensor<?x?x?x?xf32>
+      linalg.yield %val : f32
+    } -> tensor<?x?x?x?xf32>
+
     // Collapse [batch, n_head, seq, head_dim] to [batch * n_head, seq, head_dim]
     %batch_heads = arith.muli %batch, %n_head : index
     %q_3d = tensor.collapse_shape %q_transposed [[0, 1], [2], [3]]
         : tensor<?x?x?x?xf32> into tensor<?x?x?xf32>
-    %k_3d = tensor.collapse_shape %k_transposed [[0, 1], [2], [3]]
+    %k_3d = tensor.collapse_shape %k_repeated [[0, 1], [2], [3]]
         : tensor<?x?x?x?xf32> into tensor<?x?x?xf32>
-    %v_3d = tensor.collapse_shape %v_transposed [[0, 1], [2], [3]]
+    %v_3d = tensor.collapse_shape %v_repeated [[0, 1], [2], [3]]
         : tensor<?x?x?x?xf32> into tensor<?x?x?xf32>
 
     // Run attention: [batch * n_head, seq, head_dim]
