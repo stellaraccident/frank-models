@@ -8,8 +8,8 @@ from oracles.position import rope as rope_oracle
 
 
 @pytest.fixture(scope="module")
-def rope_module(rt):
-    return compile_component("position/rope.mlir", rt)
+def rope_module(iree_cfg):
+    return compile_component("position/rope.mlir", iree_cfg)
 
 
 def test_basic_correctness(rope_module):

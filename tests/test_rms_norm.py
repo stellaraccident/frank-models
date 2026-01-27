@@ -8,9 +8,9 @@ from oracles.normalization import rms_norm as rms_norm_oracle
 
 
 @pytest.fixture(scope="module")
-def rms_norm_module(rt):
+def rms_norm_module(iree_cfg):
     """Compile the RMS norm component once per test module."""
-    return compile_component("normalization/rms_norm.mlir", rt)
+    return compile_component("normalization/rms_norm.mlir", iree_cfg)
 
 
 def test_basic_correctness(rms_norm_module):

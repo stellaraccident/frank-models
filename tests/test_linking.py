@@ -7,19 +7,19 @@ from tests.utils import link_and_compile, compile_component, assert_close
 
 
 @pytest.fixture(scope="module")
-def linked_module(rt):
+def linked_module(iree_cfg):
     """Link use_math with math_ops."""
     return link_and_compile(
-        "test_linking/use_math.mlir",
-        ["test_linking/math_ops.mlir"],
-        rt,
+        main_path="test_linking/use_math.mlir",
+        library_paths=["test_linking/math_ops.mlir"],
+        iree_cfg=iree_cfg,
     )
 
 
 @pytest.fixture(scope="module")
-def standalone_math_module(rt):
+def standalone_math_module(iree_cfg):
     """Compile math_ops standalone (no linking needed)."""
-    return compile_component("test_linking/math_ops.mlir", rt)
+    return compile_component("test_linking/math_ops.mlir", iree_cfg)
 
 
 def test_standalone_add(standalone_math_module):

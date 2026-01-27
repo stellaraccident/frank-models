@@ -8,8 +8,8 @@ from oracles.activation import swiglu as swiglu_oracle
 
 
 @pytest.fixture(scope="module")
-def swiglu_module(rt):
-    return compile_component("activation/swiglu.mlir", rt)
+def swiglu_module(iree_cfg):
+    return compile_component("activation/swiglu.mlir", iree_cfg)
 
 
 def test_basic_correctness(swiglu_module):

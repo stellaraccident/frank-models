@@ -8,8 +8,8 @@ from oracles.moe import mul_mat_id as mul_mat_id_oracle
 
 
 @pytest.fixture(scope="module")
-def mul_mat_id_module(rt):
-    return compile_component("moe/mul_mat_id.mlir", rt)
+def mul_mat_id_module(iree_cfg):
+    return compile_component("moe/mul_mat_id.mlir", iree_cfg)
 
 
 def test_single_expert(mul_mat_id_module):

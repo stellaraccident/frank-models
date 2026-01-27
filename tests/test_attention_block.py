@@ -12,15 +12,15 @@ from oracles.attention import attention_block as attention_block_oracle
 
 
 @pytest.fixture(scope="module")
-def attention_block_module(rt):
+def attention_block_module(iree_cfg):
     pytest.xfail("iree-org/iree#23277: dynamic shapes + attention op")
     return link_and_compile(
-        "attention/attention_block.mlir",
-        [
+        main_path="attention/attention_block.mlir",
+        library_paths=[
             "position/rope.mlir",
             "attention/attention_gqa.mlir",
         ],
-        rt,
+        iree_cfg=iree_cfg,
     )
 
 

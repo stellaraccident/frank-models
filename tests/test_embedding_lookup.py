@@ -8,8 +8,8 @@ from oracles.embedding import embedding_lookup as embedding_oracle
 
 
 @pytest.fixture(scope="module")
-def embedding_module(rt):
-    return compile_component("embedding/embedding_lookup.mlir", rt)
+def embedding_module(iree_cfg):
+    return compile_component("embedding/embedding_lookup.mlir", iree_cfg)
 
 
 def test_basic_correctness(embedding_module):

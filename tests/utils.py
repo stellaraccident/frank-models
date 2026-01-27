@@ -37,16 +37,20 @@ DRIVER_MAP = {
 }
 
 
-class IREERuntime:
+class IREEConfig:
     """Bundle of IREE runtime components."""
 
     def __init__(
         self,
         backend: str = "llvm-cpu",
         iree_tools_dir: Optional[Path] = None,
+        save_linked_ir: Optional[Path] = None,
     ):
         self.backend = backend
         self._iree_tools_dir = iree_tools_dir
+        self._save_linked_ir = save_linked_ir
+        if save_linked_ir is not None:
+            save_linked_ir.mkdir(parents=True, exist_ok=True)
         driver = DRIVER_MAP.get(backend, "local-task")
         self.instance = VmInstance()
         self.device = get_device(driver)
@@ -212,16 +216,22 @@ class IREEModule:
         return invoke_wrapper
 
 
-def compile_mlir(mlir_source: str, rt) -> IREEModule:
+def compile_mlir(mlir_source: str, iree_cfg) -> IREEModule:
     """Compile MLIR source string to an IREE module."""
-    return IREEModule(mlir_source, rt.instance, rt.device, rt.hal_module, rt.backend)
+    return IREEModule(
+        mlir_source,
+        iree_cfg.instance,
+        iree_cfg.device,
+        iree_cfg.hal_module,
+        iree_cfg.backend,
+    )
 
 
-def compile_component(component_path: str, rt) -> IREEModule:
+def compile_component(component_path: str, iree_cfg) -> IREEModule:
     """Compile an MLIR component file to an IREE module."""
     full_path = COMPONENTS_DIR / component_path
     mlir_source = full_path.read_text()
-    return IREEModule(mlir_source, rt.instance, rt.device, rt.hal_module, rt.backend)
+    return compile_mlir(mlir_source, iree_cfg)
 
 
 def assert_close(actual, expected, rtol=1e-5, atol=1e-6):
@@ -234,26 +244,27 @@ def assert_close(actual, expected, rtol=1e-5, atol=1e-6):
     )
 
 
-def link_and_compile(
+def _run_iree_link(
     main_path: str,
     library_paths: List[str],
-    rt: IREERuntime,
-) -> IREEModule:
-    """Link MLIR modules with iree-link, then compile.
+    iree_cfg: IREEConfig,
+    debug_name: Optional[str] = None,
+) -> str:
+    """Run iree-link and return the linked MLIR source.
 
     Args:
-        main_path: Primary module (relative to COMPONENTS_DIR)
-        library_paths: Dependency modules to link
-        rt: IREERuntime instance
+        main_path: Absolute path to the primary MLIR file
+        library_paths: Dependency modules (relative to COMPONENTS_DIR)
+        iree_cfg: IREEConfig instance
+        debug_name: Base name for saving linked IR (without extension).
+            If save_linked_ir is set, the linked IR is saved there.
 
     Returns:
-        Compiled IREEModule with all functions available
+        Linked MLIR source string
     """
-    iree_link = rt.iree_tool_path("iree-link")
-    main_full = COMPONENTS_DIR / main_path
+    iree_link = iree_cfg.iree_tool_path("iree-link")
 
-    # Build iree-link command
-    cmd = [str(iree_link), str(main_full)]
+    cmd = [str(iree_link), main_path]
     for lib in library_paths:
         cmd.extend(["--link-module", str(COMPONENTS_DIR / lib)])
 
@@ -262,7 +273,56 @@ def link_and_compile(
     cmd.extend(["-o", linked_path])
 
     subprocess.run(cmd, check=True)
-
     linked_source = Path(linked_path).read_text()
-    Path(linked_path).unlink()  # cleanup
-    return compile_mlir(linked_source, rt)
+
+    if iree_cfg._save_linked_ir is not None and debug_name is not None:
+        dest = iree_cfg._save_linked_ir / f"{debug_name}.mlir"
+        dest.write_text(linked_source)
+
+    Path(linked_path).unlink(missing_ok=True)
+    return linked_source
+
+
+def link_and_compile(
+    *,
+    main_source: Optional[str] = None,
+    main_path: Optional[str] = None,
+    library_paths: List[str],
+    iree_cfg: IREEConfig,
+    debug_name: Optional[str] = None,
+) -> IREEModule:
+    """Link MLIR modules with iree-link, then compile.
+
+    Provide exactly one of main_source or main_path.
+
+    Args:
+        main_source: MLIR source string for the primary module
+        main_path: Primary module file (relative to COMPONENTS_DIR)
+        library_paths: Dependency modules to link (relative to COMPONENTS_DIR)
+        iree_cfg: IREEConfig instance
+        debug_name: Base name for saving linked IR. Defaults to main_path stem.
+
+    Returns:
+        Compiled IREEModule with all functions available
+    """
+    if (main_source is None) == (main_path is None):
+        raise ValueError("Provide exactly one of main_source or main_path")
+
+    if main_source is not None:
+        with tempfile.NamedTemporaryFile(suffix=".mlir", delete=False, mode="w") as f:
+            f.write(main_source)
+            abs_path = f.name
+        cleanup = True
+    else:
+        abs_path = str(COMPONENTS_DIR / main_path)
+        if debug_name is None:
+            debug_name = Path(main_path).stem + "_linked"
+        cleanup = False
+
+    try:
+        linked_source = _run_iree_link(abs_path, library_paths, iree_cfg, debug_name)
+    finally:
+        if cleanup:
+            Path(abs_path).unlink(missing_ok=True)
+
+    return compile_mlir(linked_source, iree_cfg)
