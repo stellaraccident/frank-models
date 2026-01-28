@@ -77,11 +77,22 @@ def transformer_layer_moe(
     attn_normed_3d = attn_normed.reshape(batch, seq_len, n_embd)
 
     attn_out = attention_block(
-        attn_normed_3d, positions,
-        wq, wk, wv, wo,
-        bq, bk, bv, bo,
-        use_bias, n_head, n_head_kv, n_embd,
-        rope_freq_base, rope_freq_scale,
+        attn_normed_3d,
+        positions,
+        wq,
+        wk,
+        wv,
+        wo,
+        bq,
+        bk,
+        bv,
+        bo,
+        use_bias,
+        n_head,
+        n_head_kv,
+        n_embd,
+        rope_freq_base,
+        rope_freq_scale,
     )
 
     # Residual connection.
@@ -93,9 +104,15 @@ def transformer_layer_moe(
     ffn_normed = rms_norm(residual1_2d, ffn_norm_w, rms_eps)
 
     moe_out = moe_ffn_block(
-        ffn_normed, gate_inp_w,
-        up_exps_w, gate_exps_w, down_exps_w,
-        n_expert, n_expert_used, n_embd, n_ff,
+        ffn_normed,
+        gate_inp_w,
+        up_exps_w,
+        gate_exps_w,
+        down_exps_w,
+        n_expert,
+        n_expert_used,
+        n_embd,
+        n_ff,
         normalize_weights,
     )
 

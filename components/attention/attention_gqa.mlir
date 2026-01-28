@@ -69,42 +69,39 @@ module @attention_components {
       linalg.yield %in : f32
     } -> tensor<?x?x?x?xf32>
 
-    // GQA: repeat K/V heads to match Q heads.
-    // K/V are [batch, n_head_kv, seq, head_dim], repeat along dim 1 to get [batch, n_head, seq, head_dim].
+    // GQA: Repeat K/V heads to match Q heads.
+    // Strategy: broadcast to [batch, n_head_kv, repeat_factor, seq, head_dim],
+    // then collapse [1,2] to get [batch, n_head, seq, head_dim].
+    // This ensures each KV head is repeated together: [H0, H0, H1, H1] not [H0, H1, H0, H1].
     %repeat_factor = arith.divui %n_head, %n_head_kv : index
-    %k_repeated_init = tensor.empty(%batch, %n_head, %seq_len, %head_dim) : tensor<?x?x?x?xf32>
-    %k_repeated = linalg.generic {
-      indexing_maps = [
-        affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
-      ],
-      iterator_types = ["parallel", "parallel", "parallel", "parallel"]
-    } outs(%k_repeated_init : tensor<?x?x?x?xf32>) {
-    ^bb0(%out: f32):
-      %i1 = linalg.index 1 : index
-      %kv_idx = arith.divui %i1, %repeat_factor : index
-      %i0 = linalg.index 0 : index
-      %i2 = linalg.index 2 : index
-      %i3 = linalg.index 3 : index
-      %val = tensor.extract %k_transposed[%i0, %kv_idx, %i2, %i3] : tensor<?x?x?x?xf32>
-      linalg.yield %val : f32
-    } -> tensor<?x?x?x?xf32>
 
-    %v_repeated_init = tensor.empty(%batch, %n_head, %seq_len, %head_dim) : tensor<?x?x?x?xf32>
-    %v_repeated = linalg.generic {
+    %k_broadcast_init = tensor.empty(%batch, %n_head_kv, %repeat_factor, %seq_len, %head_dim) : tensor<?x?x?x?x?xf32>
+    %k_broadcast = linalg.generic {
       indexing_maps = [
-        affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
+        affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d3, d4)>,
+        affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3, d4)>
       ],
-      iterator_types = ["parallel", "parallel", "parallel", "parallel"]
-    } outs(%v_repeated_init : tensor<?x?x?x?xf32>) {
-    ^bb0(%out: f32):
-      %i1 = linalg.index 1 : index
-      %kv_idx = arith.divui %i1, %repeat_factor : index
-      %i0 = linalg.index 0 : index
-      %i2 = linalg.index 2 : index
-      %i3 = linalg.index 3 : index
-      %val = tensor.extract %v_transposed[%i0, %kv_idx, %i2, %i3] : tensor<?x?x?x?xf32>
-      linalg.yield %val : f32
-    } -> tensor<?x?x?x?xf32>
+      iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel"]
+    } ins(%k_transposed : tensor<?x?x?x?xf32>) outs(%k_broadcast_init : tensor<?x?x?x?x?xf32>) {
+    ^bb0(%in: f32, %out: f32):
+      linalg.yield %in : f32
+    } -> tensor<?x?x?x?x?xf32>
+    %k_repeated = tensor.collapse_shape %k_broadcast [[0], [1, 2], [3], [4]]
+        : tensor<?x?x?x?x?xf32> into tensor<?x?x?x?xf32>
+
+    %v_broadcast_init = tensor.empty(%batch, %n_head_kv, %repeat_factor, %seq_len, %head_dim) : tensor<?x?x?x?x?xf32>
+    %v_broadcast = linalg.generic {
+      indexing_maps = [
+        affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d3, d4)>,
+        affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3, d4)>
+      ],
+      iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel"]
+    } ins(%v_transposed : tensor<?x?x?x?xf32>) outs(%v_broadcast_init : tensor<?x?x?x?x?xf32>) {
+    ^bb0(%in: f32, %out: f32):
+      linalg.yield %in : f32
+    } -> tensor<?x?x?x?x?xf32>
+    %v_repeated = tensor.collapse_shape %v_broadcast [[0], [1, 2], [3], [4]]
+        : tensor<?x?x?x?x?xf32> into tensor<?x?x?x?xf32>
 
     // Collapse [batch, n_head, seq, head_dim] to [batch * n_head, seq, head_dim]
     %batch_heads = arith.muli %batch, %n_head : index

@@ -81,7 +81,9 @@ def test_forward_basic(layer_module, params):
     iree_result = layer_module.forward(input, positions)
 
     oracle_result = oracle(
-        input, positions, params,
+        input,
+        positions,
+        params,
         layer_idx=cfg.layer_idx,
         n_head=cfg.n_head,
         n_head_kv=cfg.n_head_kv,
@@ -127,7 +129,9 @@ def test_residual_passthrough(layer_module, params):
     # so output ≈ input + 0 + 0 = input.
     # (We can only test this via oracle since the compiled module has fixed params.)
     oracle_result = oracle(
-        oracle_input, positions, zero_params,
+        oracle_input,
+        positions,
+        zero_params,
         layer_idx=cfg.layer_idx,
         n_head=cfg.n_head,
         n_head_kv=cfg.n_head_kv,
