@@ -1,7 +1,6 @@
 """Tests for Multi-Head Attention component.
 
-Note: Current implementation requires n_head == n_head_kv (MHA).
-GQA/MQA support (n_head > n_head_kv) is future work.
+Tests both MHA (n_head == n_head_kv) and GQA (n_head > n_head_kv).
 
 Fully dynamic shapes crash the compiler (iree-org/iree#23277).
 Three test tiers use iree-link wrappers with increasing dynamism:
@@ -106,6 +105,46 @@ def _compile_dynamic_batch_seq_attention(iree_cfg, n_head, head_dim, seq_div=32)
     )
 
 
+def _make_static_gqa_wrapper(batch, seq_len, n_head, n_head_kv, head_dim):
+    """Generate static GQA wrapper where K/V have fewer heads than Q."""
+    q_shape = f"{batch}x{seq_len}x{n_head}x{head_dim}"
+    kv_shape = f"{batch}x{seq_len}x{n_head_kv}x{head_dim}"
+    return f"""
+module @test_wrapper {{
+  util.func private @attention_components.attention_gqa(
+      tensor<?x?x?x?xf32>, tensor<?x?x?x?xf32>, tensor<?x?x?x?xf32>, f32
+  ) -> tensor<?x?x?x?xf32>
+
+  util.func public @main(
+      %q: tensor<{q_shape}xf32>, %k: tensor<{kv_shape}xf32>,
+      %v: tensor<{kv_shape}xf32>, %scale: f32
+  ) -> tensor<{q_shape}xf32> {{
+    %q_dyn = tensor.cast %q : tensor<{q_shape}xf32> to tensor<?x?x?x?xf32>
+    %k_dyn = tensor.cast %k : tensor<{kv_shape}xf32> to tensor<?x?x?x?xf32>
+    %v_dyn = tensor.cast %v : tensor<{kv_shape}xf32> to tensor<?x?x?x?xf32>
+    %out_dyn = util.call @attention_components.attention_gqa(
+        %q_dyn, %k_dyn, %v_dyn, %scale)
+        : (tensor<?x?x?x?xf32>, tensor<?x?x?x?xf32>, tensor<?x?x?x?xf32>, f32)
+        -> tensor<?x?x?x?xf32>
+    %out = tensor.cast %out_dyn : tensor<?x?x?x?xf32> to tensor<{q_shape}xf32>
+    util.return %out : tensor<{q_shape}xf32>
+  }}
+}}"""
+
+
+def _compile_static_gqa_attention(
+    iree_cfg, batch, seq_len, n_head, n_head_kv, head_dim
+):
+    """Compile static GQA attention wrapper."""
+    wrapper = _make_static_gqa_wrapper(batch, seq_len, n_head, n_head_kv, head_dim)
+    return link_and_compile(
+        main_source=wrapper,
+        library_paths=["attention/attention_gqa.mlir"],
+        iree_cfg=iree_cfg,
+        debug_name=f"attention_gqa_static_{batch}x{seq_len}x{n_head}kv{n_head_kv}x{head_dim}",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Static wrapper tests (IPO shape specialization)
 # ---------------------------------------------------------------------------
@@ -172,6 +211,107 @@ def test_various_scales_static(static_attention_2x4x4x32):
         iree_result = static_attention_2x4x4x32.main(query, key, value, scale)
         oracle_result = attention_oracle(query, key, value, scale)
         assert_close(iree_result, oracle_result, rtol=1e-4, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# GQA static tests (n_head_kv < n_head)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def static_gqa_2x6x8kv4x16(iree_cfg):
+    """GQA with repeat_factor=2, non-aliasing dimensions."""
+    return _compile_static_gqa_attention(iree_cfg, 2, 6, 8, 4, 16)
+
+
+@pytest.fixture(scope="module")
+def static_gqa_3x5x8kv2x32(iree_cfg):
+    """GQA with repeat_factor=4, varied dimensions."""
+    return _compile_static_gqa_attention(iree_cfg, 3, 5, 8, 2, 32)
+
+
+@pytest.fixture(scope="module")
+def static_gqa_2x8x28kv4x64(iree_cfg):
+    """GQA with repeat_factor=7 (Mixtral-like), larger dimensions."""
+    return _compile_static_gqa_attention(iree_cfg, 2, 8, 28, 4, 64)
+
+
+@pytest.fixture(scope="module")
+def static_gqa_4x7x8kv1x16(iree_cfg):
+    """MQA edge case (n_head_kv=1), all dimensions different."""
+    return _compile_static_gqa_attention(iree_cfg, 4, 7, 8, 1, 16)
+
+
+def test_gqa_repeat_factor_2(static_gqa_2x6x8kv4x16):
+    """Test GQA with repeat_factor=2 (n_head=8, n_head_kv=4)."""
+    np.random.seed(400)
+    batch, seq_len, n_head, n_head_kv, head_dim = 2, 6, 8, 4, 16
+
+    query = np.random.randn(batch, seq_len, n_head, head_dim).astype(np.float32) * 0.1
+    key = np.random.randn(batch, seq_len, n_head_kv, head_dim).astype(np.float32) * 0.1
+    value = (
+        np.random.randn(batch, seq_len, n_head_kv, head_dim).astype(np.float32) * 0.1
+    )
+    scale = np.float32(1.0 / np.sqrt(head_dim))
+
+    iree_result = static_gqa_2x6x8kv4x16.main(query, key, value, scale)
+    oracle_result = attention_oracle(query, key, value, scale)
+
+    assert_close(iree_result, oracle_result, rtol=1e-4, atol=1e-5)
+
+
+def test_gqa_repeat_factor_4(static_gqa_3x5x8kv2x32):
+    """Test GQA with repeat_factor=4 (n_head=8, n_head_kv=2)."""
+    np.random.seed(500)
+    batch, seq_len, n_head, n_head_kv, head_dim = 3, 5, 8, 2, 32
+
+    query = np.random.randn(batch, seq_len, n_head, head_dim).astype(np.float32) * 0.1
+    key = np.random.randn(batch, seq_len, n_head_kv, head_dim).astype(np.float32) * 0.1
+    value = (
+        np.random.randn(batch, seq_len, n_head_kv, head_dim).astype(np.float32) * 0.1
+    )
+    scale = np.float32(1.0 / np.sqrt(head_dim))
+
+    iree_result = static_gqa_3x5x8kv2x32.main(query, key, value, scale)
+    oracle_result = attention_oracle(query, key, value, scale)
+
+    assert_close(iree_result, oracle_result, rtol=1e-4, atol=1e-5)
+
+
+def test_gqa_repeat_factor_7(static_gqa_2x8x28kv4x64):
+    """Test GQA with repeat_factor=7 (Mixtral-like: n_head=28, n_head_kv=4)."""
+    np.random.seed(600)
+    batch, seq_len, n_head, n_head_kv, head_dim = 2, 8, 28, 4, 64
+
+    query = np.random.randn(batch, seq_len, n_head, head_dim).astype(np.float32) * 0.1
+    key = np.random.randn(batch, seq_len, n_head_kv, head_dim).astype(np.float32) * 0.1
+    value = (
+        np.random.randn(batch, seq_len, n_head_kv, head_dim).astype(np.float32) * 0.1
+    )
+    scale = np.float32(1.0 / np.sqrt(head_dim))
+
+    iree_result = static_gqa_2x8x28kv4x64.main(query, key, value, scale)
+    oracle_result = attention_oracle(query, key, value, scale)
+
+    assert_close(iree_result, oracle_result, rtol=1e-4, atol=1e-5)
+
+
+def test_mqa_edge_case(static_gqa_4x7x8kv1x16):
+    """Test MQA edge case with n_head_kv=1 (single KV head for all Q heads)."""
+    np.random.seed(700)
+    batch, seq_len, n_head, n_head_kv, head_dim = 4, 7, 8, 1, 16
+
+    query = np.random.randn(batch, seq_len, n_head, head_dim).astype(np.float32) * 0.1
+    key = np.random.randn(batch, seq_len, n_head_kv, head_dim).astype(np.float32) * 0.1
+    value = (
+        np.random.randn(batch, seq_len, n_head_kv, head_dim).astype(np.float32) * 0.1
+    )
+    scale = np.float32(1.0 / np.sqrt(head_dim))
+
+    iree_result = static_gqa_4x7x8kv1x16.main(query, key, value, scale)
+    oracle_result = attention_oracle(query, key, value, scale)
+
+    assert_close(iree_result, oracle_result, rtol=1e-4, atol=1e-5)
 
 
 # ---------------------------------------------------------------------------

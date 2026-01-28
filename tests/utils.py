@@ -19,12 +19,14 @@ from iree.runtime import (
     HalDevice,
     HalElementType,
     MemoryType,
+    ParameterIndex,
     VmContext,
     VmFunction,
     VmInstance,
     VmModule,
     VmVariantList,
     create_hal_module,
+    create_io_parameters_module,
     get_device,
 )
 
@@ -88,8 +90,9 @@ class IREEConfig:
         )
 
 
-# Component directory
+# Component and layer directories
 COMPONENTS_DIR = Path(__file__).parent.parent / "components"
+LAYERS_DIR = Path(__file__).parent.parent / "layers"
 
 # Numpy dtype to IREE element type mapping
 DTYPE_TO_ELEMENT_TYPE = {
@@ -266,7 +269,11 @@ def _run_iree_link(
 
     cmd = [str(iree_link), main_path]
     for lib in library_paths:
-        cmd.extend(["--link-module", str(COMPONENTS_DIR / lib)])
+        lib_path = Path(lib)
+        if lib_path.is_absolute():
+            cmd.extend(["--link-module", str(lib_path)])
+        else:
+            cmd.extend(["--link-module", str(COMPONENTS_DIR / lib)])
 
     with tempfile.NamedTemporaryFile(suffix=".mlir", delete=False) as f:
         linked_path = f.name
@@ -326,3 +333,156 @@ def link_and_compile(
             Path(abs_path).unlink(missing_ok=True)
 
     return compile_mlir(linked_source, iree_cfg)
+
+
+class IREEModuleWithParams:
+    """IREE module with parameter support.
+
+    Like IREEModule but includes an io_parameters module in the VM context
+    so that flow.tensor.constant with #flow.parameter.named can resolve
+    parameters at runtime.
+    """
+
+    def __init__(
+        self,
+        mlir_source: str,
+        instance: VmInstance,
+        device: HalDevice,
+        hal_module: VmModule,
+        target_backend: str,
+        params: dict[str, np.ndarray],
+        scope: str = "model",
+    ):
+        self._device = device
+        self._instance = instance
+
+        # Build parameter index from numpy arrays.
+        param_index = ParameterIndex()
+        for key, arr in params.items():
+            param_index.add_buffer(key, np.ascontiguousarray(arr))
+        provider = param_index.create_provider(scope=scope)
+        io_module = create_io_parameters_module(instance, provider)
+
+        # Compile MLIR to bytecode.
+        binary = iree.compiler.compile_str(
+            mlir_source,
+            target_backends=[target_backend],
+        )
+
+        # Load the compiled module.
+        vm_module = VmModule.copy_buffer(instance, binary)
+
+        # Create context: io_parameters must come before the compiled module.
+        self._vm_module = vm_module
+        self._context = VmContext(instance, modules=[io_module, hal_module, vm_module])
+
+    def lookup_function(self, name: str) -> VmFunction:
+        return self._vm_module.lookup_function(name)
+
+    def _numpy_to_buffer_view(self, arr: np.ndarray) -> HalBufferView:
+        arr = np.ascontiguousarray(arr)
+        element_type = DTYPE_TO_ELEMENT_TYPE.get(arr.dtype.type)
+        if element_type is None:
+            raise ValueError(f"Unsupported dtype: {arr.dtype}")
+        return self._device.allocator.allocate_buffer_copy(
+            memory_type=MemoryType.DEVICE_LOCAL,
+            allowed_usage=(BufferUsage.DEFAULT | BufferUsage.MAPPING),
+            device=self._device,
+            buffer=arr,
+            element_type=element_type,
+        )
+
+    def _buffer_view_to_numpy(self, bv: HalBufferView) -> np.ndarray:
+        device_array = DeviceArray(self._device, bv, implicit_host_transfer=True)
+        return device_array.to_host()
+
+    def invoke(
+        self,
+        function_name: str,
+        *args: Union[np.ndarray, float, int],
+        num_results: int = 1,
+    ) -> Union[np.ndarray, List[np.ndarray]]:
+        func = self.lookup_function(function_name)
+        arg_list = VmVariantList(len(args))
+        for arg in args:
+            if isinstance(arg, np.ndarray):
+                bv = self._numpy_to_buffer_view(arg)
+                arg_list.push_ref(bv)
+            elif isinstance(arg, float) or isinstance(arg, np.floating):
+                arg_list.push_float(float(arg))
+            elif isinstance(arg, (int, np.integer)):
+                arg_list.push_int(int(arg))
+            else:
+                raise TypeError(f"Unsupported argument type: {type(arg)}")
+        result_list = VmVariantList(num_results)
+        self._context.invoke(func, arg_list, result_list)
+        results = []
+        for i in range(num_results):
+            result_bv = result_list.get_as_object(i, HalBufferView)
+            results.append(self._buffer_view_to_numpy(result_bv))
+        if num_results == 1:
+            return results[0]
+        return results
+
+    def __getattr__(self, name: str):
+        def invoke_wrapper(*args, num_results: int = 1):
+            return self.invoke(name, *args, num_results=num_results)
+
+        return invoke_wrapper
+
+
+def compile_mlir_with_params(
+    mlir_source: str,
+    iree_cfg: IREEConfig,
+    params: dict[str, np.ndarray],
+    scope: str = "model",
+) -> IREEModuleWithParams:
+    """Compile MLIR source with parameter support."""
+    return IREEModuleWithParams(
+        mlir_source,
+        iree_cfg.instance,
+        iree_cfg.device,
+        iree_cfg.hal_module,
+        iree_cfg.backend,
+        params,
+        scope=scope,
+    )
+
+
+def link_and_compile_with_params(
+    *,
+    main_source: Optional[str] = None,
+    main_path: Optional[str] = None,
+    library_paths: List[str],
+    iree_cfg: IREEConfig,
+    params: dict[str, np.ndarray],
+    scope: str = "model",
+    debug_name: Optional[str] = None,
+) -> IREEModuleWithParams:
+    """Link MLIR modules with iree-link, then compile with parameter support.
+
+    library_paths are resolved relative to COMPONENTS_DIR. To include a layer,
+    pass an absolute path or use the layer_paths parameter.
+    """
+    if (main_source is None) == (main_path is None):
+        raise ValueError("Provide exactly one of main_source or main_path")
+
+    if main_source is not None:
+        with tempfile.NamedTemporaryFile(suffix=".mlir", delete=False, mode="w") as f:
+            f.write(main_source)
+            abs_path = f.name
+        cleanup = True
+    else:
+        main = Path(main_path)
+        abs_path = str(main) if main.is_absolute() else str(COMPONENTS_DIR / main_path)
+        if debug_name is None:
+            debug_name = Path(main_path).stem + "_linked"
+        cleanup = False
+
+    try:
+        linked_source = _run_iree_link(abs_path, library_paths, iree_cfg, debug_name)
+    finally:
+        if cleanup:
+            Path(abs_path).unlink(missing_ok=True)
+
+    return compile_mlir_with_params(linked_source, iree_cfg, params, scope=scope)
