@@ -75,20 +75,29 @@ module @attention_components {
     // This ensures each KV head is repeated together: [H0, H0, H1, H1] not [H0, H1, H0, H1].
     %repeat_factor = arith.divui %n_head, %n_head_kv : index
 
+    // Allocate 5D output for K broadcast: [batch, n_head_kv, repeat_factor, seq, head_dim].
     %k_broadcast_init = tensor.empty(%batch, %n_head_kv, %repeat_factor, %seq_len, %head_dim) : tensor<?x?x?x?x?xf32>
+
+    // Broadcast K along repeat_factor dimension via linalg.generic.
+    // Input map omits d2 (repeat_factor), causing each K[batch, kv_head, seq, head_dim]
+    // to be broadcast across all repeat_factor positions.
     %k_broadcast = linalg.generic {
       indexing_maps = [
-        affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d3, d4)>,
-        affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3, d4)>
+        affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d3, d4)>,      // Input: omits d2
+        affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3, d4)>   // Output: has d2
       ],
       iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel"]
     } ins(%k_transposed : tensor<?x?x?x?xf32>) outs(%k_broadcast_init : tensor<?x?x?x?x?xf32>) {
     ^bb0(%in: f32, %out: f32):
       linalg.yield %in : f32
     } -> tensor<?x?x?x?x?xf32>
+
+    // Collapse n_head_kv and repeat_factor into n_head dimension.
+    // This is a zero-cost metadata operation that fuses with surrounding ops.
     %k_repeated = tensor.collapse_shape %k_broadcast [[0], [1, 2], [3], [4]]
         : tensor<?x?x?x?x?xf32> into tensor<?x?x?x?xf32>
 
+    // Repeat V using the same broadcast+collapse pattern.
     %v_broadcast_init = tensor.empty(%batch, %n_head_kv, %repeat_factor, %seq_len, %head_dim) : tensor<?x?x?x?x?xf32>
     %v_broadcast = linalg.generic {
       indexing_maps = [
