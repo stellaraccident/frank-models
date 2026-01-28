@@ -169,6 +169,11 @@ module @transformer_layer_moe_components {
            index, index, index, index, i1) -> tensor<?x?xf32>
 
     // Unflatten MoE output back to [batch, seq_len, n_embd].
+    // NOTE: This expand_shape currently triggers a dimension inference error in full model
+    // compilation (PropagateLinalgTransposePass). The compiler cannot trace that
+    // dim(%moe_out, 0) == %batch * %seq_len through the moe_ffn_block function call,
+    // even though moe_ffn_block explicitly preserves n_tokens dimension.
+    // Works fine in isolated layer tests but fails when inlined in full forward pass.
     %moe_out_3d = tensor.expand_shape %moe_out [[0, 1], [2]]
         output_shape [%batch, %seq_len, %n_embd]
         : tensor<?x?xf32> into tensor<?x?x?xf32>
