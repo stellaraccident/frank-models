@@ -10,37 +10,38 @@
 //   input → attn_norm → attention_block → +residual
 //         → ffn_norm  → moe_ffn_block  → +residual → output
 //
-// Parameters accessed via @get.* accessor functions (provided by specialized module).
+// Parameters accessed via @model_params.* accessor functions (provided by specialized module).
 // Computation delegated to component imports (resolved by iree-link).
 //
 // Reference: kb/ben/moe_f32_parameterized.mlir @transformer_layer_moe
 
 module @transformer_layer_moe_components {
 
-  // ===== Parameter accessor imports (specialized module provides these) =====
+  // ===== Parameter accessor imports (model_params module provides these) =====
   // Each takes a layer index and returns the parameter tensor for that layer.
+  // Dependency injection pattern: layer imports from model_params namespace.
 
   // Normalization weights
-  util.func private @get.attn_norm_weight(i32) -> tensor<?xf32>
-  util.func private @get.ffn_norm_weight(i32) -> tensor<?xf32>
+  util.func private @model_params.attn_norm_weight(i32) -> tensor<?xf32>
+  util.func private @model_params.ffn_norm_weight(i32) -> tensor<?xf32>
 
   // Attention projection weights
-  util.func private @get.attn_q_weight(i32) -> tensor<?x?xf32>
-  util.func private @get.attn_k_weight(i32) -> tensor<?x?xf32>
-  util.func private @get.attn_v_weight(i32) -> tensor<?x?xf32>
-  util.func private @get.attn_output_weight(i32) -> tensor<?x?xf32>
+  util.func private @model_params.attn_q_weight(i32) -> tensor<?x?xf32>
+  util.func private @model_params.attn_k_weight(i32) -> tensor<?x?xf32>
+  util.func private @model_params.attn_v_weight(i32) -> tensor<?x?xf32>
+  util.func private @model_params.attn_output_weight(i32) -> tensor<?x?xf32>
 
   // Attention biases (may be dummy zeros if use_bias=false)
-  util.func private @get.attn_q_bias(i32) -> tensor<?xf32>
-  util.func private @get.attn_k_bias(i32) -> tensor<?xf32>
-  util.func private @get.attn_v_bias(i32) -> tensor<?xf32>
-  util.func private @get.attn_output_bias(i32) -> tensor<?xf32>
+  util.func private @model_params.attn_q_bias(i32) -> tensor<?xf32>
+  util.func private @model_params.attn_k_bias(i32) -> tensor<?xf32>
+  util.func private @model_params.attn_v_bias(i32) -> tensor<?xf32>
+  util.func private @model_params.attn_output_bias(i32) -> tensor<?xf32>
 
   // MoE weights
-  util.func private @get.ffn_gate_inp_weight(i32) -> tensor<?x?xf32>
-  util.func private @get.ffn_up_exps_weight(i32) -> tensor<?x?x?xf32>
-  util.func private @get.ffn_gate_exps_weight(i32) -> tensor<?x?x?xf32>
-  util.func private @get.ffn_down_exps_weight(i32) -> tensor<?x?x?xf32>
+  util.func private @model_params.ffn_gate_inp_weight(i32) -> tensor<?x?xf32>
+  util.func private @model_params.ffn_up_exps_weight(i32) -> tensor<?x?x?xf32>
+  util.func private @model_params.ffn_gate_exps_weight(i32) -> tensor<?x?x?xf32>
+  util.func private @model_params.ffn_down_exps_weight(i32) -> tensor<?x?x?xf32>
 
   // ===== Component imports (resolved by iree-link) =====
 
@@ -87,23 +88,23 @@ module @transformer_layer_moe_components {
 
     // ---- Load all parameters for this layer ----
 
-    %attn_norm_w = util.call @get.attn_norm_weight(%layer_idx) : (i32) -> tensor<?xf32>
-    %ffn_norm_w = util.call @get.ffn_norm_weight(%layer_idx) : (i32) -> tensor<?xf32>
+    %attn_norm_w = util.call @model_params.attn_norm_weight(%layer_idx) : (i32) -> tensor<?xf32>
+    %ffn_norm_w = util.call @model_params.ffn_norm_weight(%layer_idx) : (i32) -> tensor<?xf32>
 
-    %wq = util.call @get.attn_q_weight(%layer_idx) : (i32) -> tensor<?x?xf32>
-    %wk = util.call @get.attn_k_weight(%layer_idx) : (i32) -> tensor<?x?xf32>
-    %wv = util.call @get.attn_v_weight(%layer_idx) : (i32) -> tensor<?x?xf32>
-    %wo = util.call @get.attn_output_weight(%layer_idx) : (i32) -> tensor<?x?xf32>
+    %wq = util.call @model_params.attn_q_weight(%layer_idx) : (i32) -> tensor<?x?xf32>
+    %wk = util.call @model_params.attn_k_weight(%layer_idx) : (i32) -> tensor<?x?xf32>
+    %wv = util.call @model_params.attn_v_weight(%layer_idx) : (i32) -> tensor<?x?xf32>
+    %wo = util.call @model_params.attn_output_weight(%layer_idx) : (i32) -> tensor<?x?xf32>
 
-    %bq = util.call @get.attn_q_bias(%layer_idx) : (i32) -> tensor<?xf32>
-    %bk = util.call @get.attn_k_bias(%layer_idx) : (i32) -> tensor<?xf32>
-    %bv = util.call @get.attn_v_bias(%layer_idx) : (i32) -> tensor<?xf32>
-    %bo = util.call @get.attn_output_bias(%layer_idx) : (i32) -> tensor<?xf32>
+    %bq = util.call @model_params.attn_q_bias(%layer_idx) : (i32) -> tensor<?xf32>
+    %bk = util.call @model_params.attn_k_bias(%layer_idx) : (i32) -> tensor<?xf32>
+    %bv = util.call @model_params.attn_v_bias(%layer_idx) : (i32) -> tensor<?xf32>
+    %bo = util.call @model_params.attn_output_bias(%layer_idx) : (i32) -> tensor<?xf32>
 
-    %gate_inp_w = util.call @get.ffn_gate_inp_weight(%layer_idx) : (i32) -> tensor<?x?xf32>
-    %up_exps_w = util.call @get.ffn_up_exps_weight(%layer_idx) : (i32) -> tensor<?x?x?xf32>
-    %gate_exps_w = util.call @get.ffn_gate_exps_weight(%layer_idx) : (i32) -> tensor<?x?x?xf32>
-    %down_exps_w = util.call @get.ffn_down_exps_weight(%layer_idx) : (i32) -> tensor<?x?x?xf32>
+    %gate_inp_w = util.call @model_params.ffn_gate_inp_weight(%layer_idx) : (i32) -> tensor<?x?xf32>
+    %up_exps_w = util.call @model_params.ffn_up_exps_weight(%layer_idx) : (i32) -> tensor<?x?x?xf32>
+    %gate_exps_w = util.call @model_params.ffn_gate_exps_weight(%layer_idx) : (i32) -> tensor<?x?x?xf32>
+    %down_exps_w = util.call @model_params.ffn_down_exps_weight(%layer_idx) : (i32) -> tensor<?x?x?xf32>
 
     // ---- Attention sub-layer ----
 

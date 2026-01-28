@@ -3,13 +3,22 @@
 import numpy as np
 import pytest
 
-from layers.transformer_layer_moe import (
+from pathlib import Path
+
+from tests.layers.transformer_moe_config import (
     MoELayerConfig,
-    generate_specialized_module,
+    generate_accessor_module,
+    generate_wrapper_module,
     generate_random_params,
 )
 from oracles.transformer_layer import transformer_layer_moe as oracle
 from tests.utils import link_and_compile_with_params, assert_close
+
+
+# Absolute path to the layer MLIR file
+LAYER_MLIR = str(
+    Path(__file__).parent.parent.parent / "layers" / "transformer_layer_moe.mlir"
+)
 
 
 # Small Mixtral-like test config.
@@ -31,8 +40,9 @@ TEST_CFG = MoELayerConfig(
     normalize_weights=False,
 )
 
-# Compute component libraries (linked into the combined main module).
-COMPONENT_LIBRARIES = [
+# Libraries to link: layer (absolute path) + compute components (relative to components/)
+LAYER_AND_COMPONENTS = [
+    LAYER_MLIR,  # Absolute path since layers/ is not under components/
     "normalization/rms_norm.mlir",
     "attention/attention_block.mlir",
     "attention/attention_gqa.mlir",
@@ -47,21 +57,39 @@ COMPONENT_LIBRARIES = [
 def layer_module(iree_cfg):
     """Compile MoE transformer layer with random parameters.
 
-    The generated module contains the layer function inlined along with
-    parameter accessors and the static @forward wrapper. Only compute
-    component imports are resolved by iree-link.
-    """
-    params = generate_random_params(TEST_CFG, seed=42, scale=0.1)
-    specialized_mlir = generate_specialized_module(TEST_CFG, scope="model")
+    Generates:
+    - Accessor module: parameter loading functions
+    - Wrapper module: static @forward entry point
 
-    return link_and_compile_with_params(
-        main_source=specialized_mlir,
-        library_paths=COMPONENT_LIBRARIES,
-        iree_cfg=iree_cfg,
-        params=params,
-        scope="model",
-        debug_name="transformer_layer_moe_linked",
-    )
+    Links with layer and compute components via iree-link.
+    """
+    import tempfile
+
+    params = generate_random_params(TEST_CFG, seed=42, scale=0.1)
+
+    # Generate accessor module and write to temp file
+    accessor_mlir = generate_accessor_module(TEST_CFG, scope="model")
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".mlir", delete=False) as f:
+        f.write(accessor_mlir)
+        accessor_path = f.name
+
+    # Generate main wrapper module
+    wrapper_mlir = generate_wrapper_module(TEST_CFG)
+
+    # Link: main + accessors + layer + components
+    libraries = [accessor_path] + LAYER_AND_COMPONENTS
+
+    try:
+        return link_and_compile_with_params(
+            main_source=wrapper_mlir,
+            library_paths=libraries,
+            iree_cfg=iree_cfg,
+            params=params,
+            scope="model",
+            debug_name="transformer_layer_moe_linked",
+        )
+    finally:
+        Path(accessor_path).unlink(missing_ok=True)
 
 
 @pytest.fixture(scope="module")
