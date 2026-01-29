@@ -216,36 +216,24 @@ module @model_params {
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    reason="expand_shape dimension inference fails through moe_ffn_block call - PropagateLinalgTransposePass can't trace n_tokens relationship"
-)
 def test_mixtral_compiles(iree_cfg):
     """Test that Mixtral model MLIR compiles."""
     assert _compile_model(iree_cfg, "mixtral")
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    reason="expand_shape dimension inference fails through moe_ffn_block call - PropagateLinalgTransposePass can't trace n_tokens relationship"
-)
 def test_grok_compiles(iree_cfg):
     """Test that Grok model MLIR compiles."""
     assert _compile_model(iree_cfg, "grok")
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    reason="expand_shape dimension inference fails through moe_ffn_block call - PropagateLinalgTransposePass can't trace n_tokens relationship"
-)
 def test_qwen2moe_compiles(iree_cfg):
     """Test that Qwen2MoE model MLIR compiles."""
     assert _compile_model(iree_cfg, "qwen2moe")
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    reason="expand_shape dimension inference fails through moe_ffn_block call - PropagateLinalgTransposePass can't trace n_tokens relationship"
-)
 def test_dbrx_compiles(iree_cfg):
     """Test that DBRX model MLIR compiles."""
     assert _compile_model(iree_cfg, "dbrx")
