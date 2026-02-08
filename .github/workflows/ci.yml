@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pre-commit:
+    name: Pre-commit checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Run pre-commit on all files
+        run: pre-commit run --all-files
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install \
+            --find-links https://iree.dev/pip-release-links.html \
+            --upgrade \
+            iree-base-compiler \
+            iree-base-runtime
+          pip install numpy pytest
+
+      - name: Find IREE tools directory
+        id: iree-tools
+        run: |
+          # IREE tools are installed in the venv bin directory
+          TOOLS_DIR=$(python -c "import sysconfig; print(sysconfig.get_path('scripts'))")
+          echo "dir=$TOOLS_DIR" >> $GITHUB_OUTPUT
+          # Verify iree-link exists
+          ls -la "$TOOLS_DIR/iree-link" || echo "iree-link not found in $TOOLS_DIR"
+
+      - name: Run tests
+        run: |
+          pytest tests/ -v --iree-tools-dir="${{ steps.iree-tools.outputs.dir }}"
