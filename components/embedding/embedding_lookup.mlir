@@ -40,4 +40,25 @@ module @embedding_components {
     util.return %embeddings : tensor<?x?x?xf32>
   }
 
+  // 1D variant: single token per batch (for decode step).
+  // Takes indices of shape [batch] and returns embeddings of shape [batch, n_embd].
+  util.func public @embedding_lookup_1d(
+      %weight: tensor<?x?xf32>,   // [vocab_size, n_embd]
+      %indices: tensor<?xi64>     // [batch]
+  ) -> tensor<?x?xf32> {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+
+    %batch = tensor.dim %indices, %c0 : tensor<?xi64>
+    %n_embd = tensor.dim %weight, %c1 : tensor<?x?xf32>
+
+    // Gather embeddings directly: [batch, n_embd].
+    %init = tensor.empty(%batch, %n_embd) : tensor<?x?xf32>
+    %embeddings = iree_linalg_ext.gather dimension_map = [0]
+        ins(%weight, %indices : tensor<?x?xf32>, tensor<?xi64>)
+        outs(%init : tensor<?x?xf32>) -> tensor<?x?xf32>
+
+    util.return %embeddings : tensor<?x?xf32>
+  }
+
 }

@@ -34,7 +34,7 @@
 
 !elem_t = f32
 
-module @kvcache {
+module @kvcache_components {
 
   // Allocate a paged KV cache block pool.
   //
