@@ -23,7 +23,7 @@
 //   @model_params - Parameter accessors (token_embd_weight, attn_q_weight, etc.)
 //   Components: embedding, rms_norm, kvcache, transformer_layer_moe_prefill/decode
 
-module @llm_moe_cached {
+module @llm_inference {
 
   // ===== Hyperparameter imports (hparams module provides these) =====
   util.func private @hparams.vocab_size() -> i64
@@ -211,7 +211,7 @@ module @llm_moe_cached {
       scf.yield %layer_out, %cache_updated : tensor<?x?x?xf32>, !util.list<?>
     }
 
-    // Output normalization.
+    // Output normalization (operates on 2D: [batch*seq_len, n_embd]).
     %final_hidden_2d = tensor.collapse_shape %final_hidden [[0, 1], [2]]
         : tensor<?x?x?xf32> into tensor<?x?xf32>
     %output_norm_w = util.call @model_params.output_norm_weight() : () -> tensor<?xf32>
@@ -219,21 +219,20 @@ module @llm_moe_cached {
         %final_hidden_2d, %output_norm_w, %rms_eps)
         : (tensor<?x?xf32>, tensor<?xf32>, f32) -> tensor<?x?xf32>
 
-    %normalized = tensor.expand_shape %normalized_2d [[0, 1], [2]]
-        output_shape [%batch, %seq_len, %n_embd]
-        : tensor<?x?xf32> into tensor<?x?x?xf32>
-
-    // LM head projection.
-    %output_weight_2d = util.call @model_params.output_weight() : () -> tensor<?x?xf32>
-    %output_weight_static = tensor.expand_shape %output_weight_2d [[0, 1], [2]]
-        output_shape [%c1, %n_embd, %n_vocab]
-        : tensor<?x?xf32> into tensor<1x?x?xf32>
-    %output_weight = tensor.cast %output_weight_static : tensor<1x?x?xf32> to tensor<?x?x?xf32>
-    %logits_empty = tensor.empty(%batch, %seq_len, %n_vocab) : tensor<?x?x?xf32>
+    // LM head projection: 2D matmul [batch*seq_len, n_embd] @ [n_embd, vocab] -> [batch*seq_len, vocab].
+    // Using 2D matmul avoids shape inference issues with expand_shape on dynamic tensors.
+    %output_weight = util.call @model_params.output_weight() : () -> tensor<?x?xf32>
+    %n_tokens = arith.muli %batch, %seq_len : index
+    %logits_2d_empty = tensor.empty(%n_tokens, %n_vocab) : tensor<?x?xf32>
     %zero = arith.constant 0.0 : f32
-    %logits_init = linalg.fill ins(%zero : f32) outs(%logits_empty : tensor<?x?x?xf32>) -> tensor<?x?x?xf32>
-    %logits = linalg.batch_matmul ins(%normalized, %output_weight : tensor<?x?x?xf32>, tensor<?x?x?xf32>)
-        outs(%logits_init : tensor<?x?x?xf32>) -> tensor<?x?x?xf32>
+    %logits_2d_init = linalg.fill ins(%zero : f32) outs(%logits_2d_empty : tensor<?x?xf32>) -> tensor<?x?xf32>
+    %logits_2d = linalg.matmul ins(%normalized_2d, %output_weight : tensor<?x?xf32>, tensor<?x?xf32>)
+        outs(%logits_2d_init : tensor<?x?xf32>) -> tensor<?x?xf32>
+
+    // Reshape logits to [batch, seq_len, vocab].
+    %logits = tensor.expand_shape %logits_2d [[0, 1], [2]]
+        output_shape [%batch, %seq_len, %n_vocab]
+        : tensor<?x?xf32> into tensor<?x?x?xf32>
 
     util.return %logits, %final_cache : tensor<?x?x?xf32>, !util.list<?>
   }

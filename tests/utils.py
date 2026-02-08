@@ -90,9 +90,8 @@ class IREEConfig:
         )
 
 
-# Component and layer directories
+# Component directory
 COMPONENTS_DIR = Path(__file__).parent.parent / "components"
-LAYERS_DIR = Path(__file__).parent.parent / "layers"
 
 # Numpy dtype to IREE element type mapping
 DTYPE_TO_ELEMENT_TYPE = {

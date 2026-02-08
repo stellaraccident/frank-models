@@ -1,7 +1,7 @@
 """NumPy oracle for MoE transformer layer.
 
 Composes existing oracles: rms_norm, attention_block, moe_ffn_block.
-Matches the MLIR semantics in layers/transformer_layer_moe.mlir.
+Matches the MLIR semantics of the transformer layer components in architectures/llm/.
 """
 
 import numpy as np
