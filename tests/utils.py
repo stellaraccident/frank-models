@@ -90,9 +90,8 @@ class IREEConfig:
         )
 
 
-# Component and layer directories
+# Component directory
 COMPONENTS_DIR = Path(__file__).parent.parent / "components"
-LAYERS_DIR = Path(__file__).parent.parent / "layers"
 
 # Numpy dtype to IREE element type mapping
 DTYPE_TO_ELEMENT_TYPE = {
@@ -129,9 +128,14 @@ class IREEModule:
         self._instance = instance
 
         # Compile MLIR to bytecode
+        # Use host CPU targeting to avoid generic CPU warnings and improve codegen
+        extra_args = []
+        if target_backend == "llvm-cpu":
+            extra_args.append("--iree-llvmcpu-target-cpu=host")
         self._binary = iree.compiler.compile_str(
             mlir_source,
             target_backends=[target_backend],
+            extra_args=extra_args,
         )
 
         # Load the compiled module
@@ -364,9 +368,14 @@ class IREEModuleWithParams:
         io_module = create_io_parameters_module(instance, provider)
 
         # Compile MLIR to bytecode.
+        # Use host CPU targeting to avoid generic CPU warnings and improve codegen
+        extra_args = []
+        if target_backend == "llvm-cpu":
+            extra_args.append("--iree-llvmcpu-target-cpu=host")
         binary = iree.compiler.compile_str(
             mlir_source,
             target_backends=[target_backend],
+            extra_args=extra_args,
         )
 
         # Load the compiled module.

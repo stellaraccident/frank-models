@@ -8,6 +8,11 @@
 // Supports GQA: n_head_kv may differ from n_head (Q heads).
 // KV heads are repeated to match Q heads via the attention indexing maps.
 //
+// TODO(#4): This component lacks causal masking, making it unsuitable for
+// autoregressive (decoder-only) models. The model will produce incorrect
+// outputs because each position can attend to future positions.
+// See: https://github.com/stellaraccident/frank-models/issues/4
+//
 // Usage:
 //   %output = call @attention_gqa(%query, %key, %value, %scale)
 //       : (tensor<?x?x?x?xf32>, tensor<?x?x?x?xf32>, tensor<?x?x?x?xf32>, f32)

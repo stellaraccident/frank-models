@@ -4,22 +4,34 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-// MoE Transformer Layer: pre-norm attention + MoE FFN with residual connections.
+// MoE Transformer Layer (Prefill): pre-norm attention + MoE FFN with residual connections.
+// Processes full input sequence and writes K/V to cache via scatter_prefill.
 //
 // Architecture (Mixtral-style):
-//   input → attn_norm → attention_block → +residual
-//         → ffn_norm  → moe_ffn_block  → +residual → output
+//   input → attn_norm → attention_block_prefill → scatter_prefill(cache) → +residual
+//         → ffn_norm  → moe_ffn_block          → +residual → output
 //
-// Parameters accessed via @model_params.* accessor functions (provided by specialized module).
-// Computation delegated to component imports (resolved by iree-link).
+// Integrates with unified paged KV cache. K/V from attention is scattered to cache
+// before returning.
 //
-// Reference: kb/ben/moe_f32_parameterized.mlir @transformer_layer_moe
+// Logical shapes:
+//   input:           [batch, seq_len, n_embd]           - Input hidden states
+//   positions:       [batch, seq_len]                   - Position indices for RoPE
+//   cache:           !util.list<?>                      - Unified KV cache
+//   block_tables:    [n_layers, batch, max_blocks]      - Block indirection
+//   start_positions: [batch]                            - Where to start writing (usually 0)
+//   block_size:      index                              - Tokens per block
+//
+// Returns:
+//   output:          [batch, seq_len, n_embd]           - Output hidden states
+//   cache_out:       !util.list<?>                      - Cache with K/V written
+//
+// Reference: transformer_layer_moe.mlir, attention_block_prefill.mlir, kvcache.mlir
 
-module @transformer_layer_moe_components {
+module @transformer_layer_moe_prefill_components {
 
   // ===== Parameter accessor imports (model_params module provides these) =====
   // Each takes a layer index and returns the parameter tensor for that layer.
-  // Dependency injection pattern: layer imports from model_params namespace.
 
   // Normalization weights
   util.func private @model_params.attn_norm_weight(i32) -> tensor<?xf32>
@@ -46,27 +58,66 @@ module @transformer_layer_moe_components {
   // ===== Component imports (resolved by iree-link) =====
 
   util.func private @rms_norm_components.rms_norm_linalg(
-      tensor<?x?xf32>, tensor<?xf32>, f32
+      tensor<?x?xf32>,    // [n_tokens, hidden_dim]
+      tensor<?xf32>,       // [hidden_dim]
+      f32                  // epsilon
   ) -> tensor<?x?xf32>
 
-  util.func private @attention_block_components.attention_block(
-      tensor<?x?x?xf32>, tensor<?x?xi64>,
-      tensor<?x?xf32>, tensor<?x?xf32>, tensor<?x?xf32>, tensor<?x?xf32>,
-      tensor<?xf32>, tensor<?xf32>, tensor<?xf32>, tensor<?xf32>,
-      i1, index, index, index, f32, f32
-  ) -> tensor<?x?x?xf32>
+  // Prefill attention: returns output + K/V for cache storage
+  util.func private @attention_block_prefill_components.attention_block_prefill(
+      tensor<?x?x?xf32>,   // [batch, seq_len, n_embd]
+      tensor<?x?xi64>,     // [batch, seq_len]
+      tensor<?x?xf32>,     // wq
+      tensor<?x?xf32>,     // wk
+      tensor<?x?xf32>,     // wv
+      tensor<?x?xf32>,     // wo
+      tensor<?xf32>,       // bq
+      tensor<?xf32>,       // bk
+      tensor<?xf32>,       // bv
+      tensor<?xf32>,       // bo
+      i1,                  // use_bias
+      index,               // n_head
+      index,               // n_head_kv
+      index,               // n_embd
+      f32,                 // rope_freq_base
+      f32                  // rope_freq_scale
+  ) -> (tensor<?x?x?xf32>,     // output: [batch, seq_len, n_embd]
+        tensor<?x?x?x?xf32>,   // k_out: [batch, seq_len, n_head_kv, head_dim]
+        tensor<?x?x?x?xf32>)   // v_out: [batch, seq_len, n_head_kv, head_dim]
 
   util.func private @moe_ffn_components.moe_ffn_block(
-      tensor<?x?xf32>, tensor<?x?xf32>,
-      tensor<?x?x?xf32>, tensor<?x?x?xf32>, tensor<?x?x?xf32>,
-      index, index, index, index, i1
+      tensor<?x?xf32>,       // [n_tokens, n_embd]
+      tensor<?x?xf32>,       // gate_inp_weight
+      tensor<?x?x?xf32>,     // up_exps_weight
+      tensor<?x?x?xf32>,     // gate_exps_weight
+      tensor<?x?x?xf32>,     // down_exps_weight
+      index,                 // n_expert
+      index,                 // n_expert_used
+      index,                 // n_embd
+      index,                 // n_ff
+      i1                     // normalize_weights
   ) -> tensor<?x?xf32>
+
+  // KV cache scatter for prefill
+  util.func private @kvcache_components.scatter_prefill(
+      !util.list<?>,           // cache
+      index,                   // layer
+      tensor<?x?x?x?xf32>,     // new_k: [batch, seq_len, n_head_kv, head_dim]
+      tensor<?x?x?x?xf32>,     // new_v: [batch, seq_len, n_head_kv, head_dim]
+      tensor<?x?x?xi32>,       // block_tables: [n_layers, batch, max_blocks]
+      tensor<?xi32>,           // start_positions: [batch]
+      index                    // block_size
+  ) -> !util.list<?>
 
   // ===== Layer function =====
 
-  util.func public @transformer_layer_moe(
-      %input: tensor<?x?x?xf32>,      // [batch, seq_len, n_embd]
-      %positions: tensor<?x?xi64>,     // [batch, seq_len]
+  util.func public @transformer_layer_moe_prefill(
+      %input: tensor<?x?x?xf32>,        // [batch, seq_len, n_embd]
+      %positions: tensor<?x?xi64>,       // [batch, seq_len]
+      %cache: !util.list<?>,             // Unified KV cache
+      %block_tables: tensor<?x?x?xi32>,  // [n_layers, batch, max_blocks]
+      %start_positions: tensor<?xi32>,   // [batch] - where to start writing (usually 0)
+      %block_size: index,
       %layer_idx: i32,
       %n_head: index,
       %n_head_kv: index,
@@ -79,12 +130,13 @@ module @transformer_layer_moe_components {
       %rope_freq_scale: f32,
       %use_bias: i1,
       %normalize_weights: i1
-  ) -> tensor<?x?x?xf32> {
+  ) -> (tensor<?x?x?xf32>,               // output: [batch, seq_len, n_embd]
+        !util.list<?>) {                 // cache_out with K/V written
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
     %batch = tensor.dim %input, %c0 : tensor<?x?x?xf32>
     %seq_len = tensor.dim %input, %c1 : tensor<?x?x?xf32>
-    %n_tokens = arith.muli %batch, %seq_len : index
 
     // ---- Load all parameters for this layer ----
 
@@ -108,7 +160,7 @@ module @transformer_layer_moe_components {
 
     // ---- Attention sub-layer ----
 
-    // Flatten [batch, seq_len, n_embd] → [batch*seq_len, n_embd] for rms_norm (2D).
+    // Flatten [batch, seq_len, n_embd] → [n_tokens, n_embd] for rms_norm (2D).
     %input_2d = tensor.collapse_shape %input [[0, 1], [2]]
         : tensor<?x?x?xf32> into tensor<?x?xf32>
 
@@ -116,12 +168,13 @@ module @transformer_layer_moe_components {
         %input_2d, %attn_norm_w, %rms_eps)
         : (tensor<?x?xf32>, tensor<?xf32>, f32) -> tensor<?x?xf32>
 
-    // Unflatten back to [batch, seq_len, n_embd] for attention_block (3D).
+    // Unflatten back to [batch, seq_len, n_embd] for attention_block_prefill (3D).
     %attn_normed_3d = tensor.expand_shape %attn_normed [[0, 1], [2]]
         output_shape [%batch, %seq_len, %n_embd]
         : tensor<?x?xf32> into tensor<?x?x?xf32>
 
-    %attn_out = util.call @attention_block_components.attention_block(
+    // Call prefill attention: returns output + K/V for cache storage.
+    %attn_out, %k_out, %v_out = util.call @attention_block_prefill_components.attention_block_prefill(
         %attn_normed_3d, %positions,
         %wq, %wk, %wv, %wo,
         %bq, %bk, %bv, %bo,
@@ -130,7 +183,8 @@ module @transformer_layer_moe_components {
         : (tensor<?x?x?xf32>, tensor<?x?xi64>,
            tensor<?x?xf32>, tensor<?x?xf32>, tensor<?x?xf32>, tensor<?x?xf32>,
            tensor<?xf32>, tensor<?xf32>, tensor<?xf32>, tensor<?xf32>,
-           i1, index, index, index, f32, f32) -> tensor<?x?x?xf32>
+           i1, index, index, index, f32, f32)
+        -> (tensor<?x?x?xf32>, tensor<?x?x?x?xf32>, tensor<?x?x?x?xf32>)
 
     // Residual connection: input + attn_out.
     %residual1_init = tensor.empty(%batch, %seq_len, %n_embd) : tensor<?x?x?xf32>
@@ -169,11 +223,6 @@ module @transformer_layer_moe_components {
            index, index, index, index, i1) -> tensor<?x?xf32>
 
     // Unflatten MoE output back to [batch, seq_len, n_embd].
-    // NOTE: This expand_shape currently triggers a dimension inference error in full model
-    // compilation (PropagateLinalgTransposePass). The compiler cannot trace that
-    // dim(%moe_out, 0) == %batch * %seq_len through the moe_ffn_block function call,
-    // even though moe_ffn_block explicitly preserves n_tokens dimension.
-    // Works fine in isolated layer tests but fails when inlined in full forward pass.
     %moe_out_3d = tensor.expand_shape %moe_out [[0, 1], [2]]
         output_shape [%batch, %seq_len, %n_embd]
         : tensor<?x?xf32> into tensor<?x?x?xf32>
@@ -194,7 +243,15 @@ module @transformer_layer_moe_components {
       linalg.yield %sum : f32
     } -> tensor<?x?x?xf32>
 
-    util.return %output : tensor<?x?x?xf32>
+    // Scatter K/V to cache for this layer.
+    %layer = arith.index_cast %layer_idx : i32 to index
+    %cache_updated = util.call @kvcache_components.scatter_prefill(
+        %cache, %layer, %k_out, %v_out,
+        %block_tables, %start_positions, %block_size)
+        : (!util.list<?>, index, tensor<?x?x?x?xf32>, tensor<?x?x?x?xf32>,
+           tensor<?x?x?xi32>, tensor<?xi32>, index) -> !util.list<?>
+
+    util.return %output, %cache_updated : tensor<?x?x?xf32>, !util.list<?>
   }
 
 }
