@@ -3,13 +3,21 @@
 Tests the canonical KV cache with device-side control data (block_tables,
 context_lens, block_indices, pos_in_blocks as tensors, not host lists).
 
-Physical cache layout (block pool):
+Physical cache layout (unified block pool, shared across all layers):
   K/V: [n_blocks, block_size, n_head_kv, head_dim]
+
+Layer-aware metadata:
+  block_tables: [n_layers, batch, max_blocks_per_seq]
+  context_lens: [n_layers, batch]
 
 Interface:
   allocate(n_blocks, block_size, n_head_kv, head_dim) -> cache
-  gather(cache, block_tables, context_lens, max_context_len) -> (K, V)
-  scatter_decode(cache, new_k, new_v, block_indices, pos_in_blocks) -> cache
+  gather(cache, layer, block_tables, context_lens, max_context_len) -> (K, V)
+  scatter_decode(cache, layer, new_k, new_v, block_indices, pos_in_blocks) -> cache
+  scatter_prefill(cache, layer, new_k, new_v, block_tables, start_positions, block_size) -> cache
+
+NOTE: scatter_prefill assumes uniform sequence lengths (all sequences have the same
+seq_len). Ragged scatter (per-sequence seq_lengths) is a potential future optimization.
 """
 
 import numpy as np
@@ -21,6 +29,7 @@ from oracles.kvcache import (
     allocate as allocate_oracle,
     gather as gather_oracle,
     scatter_decode as scatter_decode_oracle,
+    scatter_prefill as scatter_prefill_oracle,
 )
 
 
@@ -70,15 +79,23 @@ class TestGather:
         """Test basic gather with block tables and context lengths."""
         np.random.seed(42)
         n_blocks, block_size, n_head_kv, head_dim = 8, 4, 2, 8
+        n_layers = 2  # Test with 2 layers
         batch = 2
         max_blocks_per_seq = 4
         max_context_len = 12  # 3 blocks worth
+        layer = 0  # Test layer 0
 
-        # Create block tables: seq 0 uses blocks [0,1,2], seq 1 uses blocks [3,4,5]
+        # Create block tables: [n_layers, batch, max_blocks]
+        # seq 0 uses blocks [0,1,2], seq 1 uses blocks [3,4,5]
         block_tables = np.array(
-            [[0, 1, 2, 0], [3, 4, 5, 0]], dtype=np.int32
-        )  # [batch, max_blocks]
-        context_lens = np.array([10, 8], dtype=np.int32)  # [batch]
+            [
+                [[0, 1, 2, 0], [3, 4, 5, 0]],  # layer 0
+                [[0, 1, 2, 0], [3, 4, 5, 0]],  # layer 1 (same for simplicity)
+            ],
+            dtype=np.int32,
+        )
+        # context_lens: [n_layers, batch]
+        context_lens = np.array([[10, 8], [10, 8]], dtype=np.int32)
 
         # Allocate and fill cache with known data
         k_oracle, v_oracle = allocate_oracle(n_blocks, block_size, n_head_kv, head_dim)
@@ -107,24 +124,32 @@ class TestGather:
         scatter_func = kvcache_module.lookup_function("scatter_decode")
         for blk in range(6):
             for pos in range(block_size):
-                new_k = k_oracle[blk : blk + 1, pos, :, :].reshape(1, n_head_kv, head_dim)
-                new_v = v_oracle[blk : blk + 1, pos, :, :].reshape(1, n_head_kv, head_dim)
+                new_k = k_oracle[blk : blk + 1, pos, :, :].reshape(
+                    1, n_head_kv, head_dim
+                )
+                new_v = v_oracle[blk : blk + 1, pos, :, :].reshape(
+                    1, n_head_kv, head_dim
+                )
                 blk_indices = np.array([blk], dtype=np.int32)
                 pos_indices = np.array([pos], dtype=np.int32)
 
-                scatter_args = VmVariantList(5)
+                scatter_args = VmVariantList(6)
                 scatter_args.push_list(cache)
+                scatter_args.push_int(layer)
                 scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_k))
                 scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_v))
                 scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(blk_indices))
                 scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(pos_indices))
                 scatter_results = VmVariantList(1)
-                kvcache_module._context.invoke(scatter_func, scatter_args, scatter_results)
+                kvcache_module._context.invoke(
+                    scatter_func, scatter_args, scatter_results
+                )
                 cache = scatter_results.get_as_list(0)
 
         # Gather using block tables and context lengths
-        gather_args = VmVariantList(4)
+        gather_args = VmVariantList(5)
         gather_args.push_list(cache)
+        gather_args.push_int(layer)
         gather_args.push_ref(kvcache_module._numpy_to_buffer_view(block_tables))
         gather_args.push_ref(kvcache_module._numpy_to_buffer_view(context_lens))
         gather_args.push_int(max_context_len)
@@ -145,8 +170,12 @@ class TestGather:
         assert v_result.shape == (batch, max_context_len, n_head_kv, head_dim)
 
         # Compare against oracle
-        k_expected = gather_oracle(k_oracle, block_tables, context_lens, max_context_len)
-        v_expected = gather_oracle(v_oracle, block_tables, context_lens, max_context_len)
+        k_expected = gather_oracle(
+            k_oracle, layer, block_tables, context_lens, max_context_len
+        )
+        v_expected = gather_oracle(
+            v_oracle, layer, block_tables, context_lens, max_context_len
+        )
 
         assert_close(k_result, k_expected)
         assert_close(v_result, v_expected)
@@ -155,18 +184,22 @@ class TestGather:
         """Test gather with different context lengths per sequence."""
         np.random.seed(123)
         n_blocks, block_size, n_head_kv, head_dim = 16, 4, 2, 8
+        n_layers = 1
         batch = 3
         max_context_len = 12
+        layer = 0
 
-        # Different context lengths: 5, 9, 3
-        context_lens = np.array([5, 9, 3], dtype=np.int32)
+        # Different context lengths: 5, 9, 3 - [n_layers, batch]
+        context_lens = np.array([[5, 9, 3]], dtype=np.int32)
 
-        # Block tables: each sequence uses different blocks
+        # Block tables: each sequence uses different blocks - [n_layers, batch, max_blocks]
         block_tables = np.array(
             [
-                [0, 1, 2, 0],  # seq 0: blocks 0,1,2
-                [3, 4, 5, 0],  # seq 1: blocks 3,4,5
-                [6, 7, 8, 0],  # seq 2: blocks 6,7,8
+                [
+                    [0, 1, 2, 0],  # seq 0: blocks 0,1,2
+                    [3, 4, 5, 0],  # seq 1: blocks 3,4,5
+                    [6, 7, 8, 0],  # seq 2: blocks 6,7,8
+                ],
             ],
             dtype=np.int32,
         )
@@ -196,24 +229,32 @@ class TestGather:
         scatter_func = kvcache_module.lookup_function("scatter_decode")
         for blk in range(9):
             for pos in range(block_size):
-                new_k = k_oracle[blk : blk + 1, pos, :, :].reshape(1, n_head_kv, head_dim)
-                new_v = v_oracle[blk : blk + 1, pos, :, :].reshape(1, n_head_kv, head_dim)
+                new_k = k_oracle[blk : blk + 1, pos, :, :].reshape(
+                    1, n_head_kv, head_dim
+                )
+                new_v = v_oracle[blk : blk + 1, pos, :, :].reshape(
+                    1, n_head_kv, head_dim
+                )
                 blk_indices = np.array([blk], dtype=np.int32)
                 pos_indices = np.array([pos], dtype=np.int32)
 
-                scatter_args = VmVariantList(5)
+                scatter_args = VmVariantList(6)
                 scatter_args.push_list(cache)
+                scatter_args.push_int(layer)
                 scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_k))
                 scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_v))
                 scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(blk_indices))
                 scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(pos_indices))
                 scatter_results = VmVariantList(1)
-                kvcache_module._context.invoke(scatter_func, scatter_args, scatter_results)
+                kvcache_module._context.invoke(
+                    scatter_func, scatter_args, scatter_results
+                )
                 cache = scatter_results.get_as_list(0)
 
         # Gather
-        gather_args = VmVariantList(4)
+        gather_args = VmVariantList(5)
         gather_args.push_list(cache)
+        gather_args.push_int(layer)
         gather_args.push_ref(kvcache_module._numpy_to_buffer_view(block_tables))
         gather_args.push_ref(kvcache_module._numpy_to_buffer_view(context_lens))
         gather_args.push_int(max_context_len)
@@ -226,11 +267,13 @@ class TestGather:
         )
 
         # Oracle
-        k_expected = gather_oracle(k_oracle, block_tables, context_lens, max_context_len)
+        k_expected = gather_oracle(
+            k_oracle, layer, block_tables, context_lens, max_context_len
+        )
 
         # Verify positions within context_len match
         for b in range(batch):
-            ctx_len = context_lens[b]
+            ctx_len = context_lens[layer, b]
             assert_close(k_result[b, :ctx_len, :, :], k_expected[b, :ctx_len, :, :])
             # Positions beyond context_len should be zero
             if ctx_len < max_context_len:
@@ -245,6 +288,7 @@ class TestScatterDecode:
         np.random.seed(42)
         n_blocks, block_size, n_head_kv, head_dim = 8, 4, 2, 8
         batch_size = 3
+        layer = 0
 
         # Each sequence writes to a different block at a different position
         block_indices = np.array([0, 2, 5], dtype=np.int32)
@@ -266,8 +310,9 @@ class TestScatterDecode:
         new_v = np.random.randn(batch_size, n_head_kv, head_dim).astype(np.float32)
 
         # Scatter
-        scatter_args = VmVariantList(5)
+        scatter_args = VmVariantList(6)
         scatter_args.push_list(cache)
+        scatter_args.push_int(layer)
         scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_k))
         scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_v))
         scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(block_indices))
@@ -290,14 +335,168 @@ class TestScatterDecode:
             n_blocks, block_size, n_head_kv, head_dim
         )
         k_expected = scatter_decode_oracle(
-            k_cache_init, new_k, block_indices, pos_in_blocks
+            k_cache_init, layer, new_k, block_indices, pos_in_blocks
         )
         v_expected = scatter_decode_oracle(
-            v_cache_init, new_v, block_indices, pos_in_blocks
+            v_cache_init, layer, new_v, block_indices, pos_in_blocks
         )
 
         assert_close(k_updated, k_expected)
         assert_close(v_updated, v_expected)
+
+
+class TestScatterPrefill:
+    """Tests for scatter_prefill operation (multiple tokens per sequence)."""
+
+    def test_basic(self, kvcache_module):
+        """Test basic scatter_prefill with uniform sequence lengths."""
+        np.random.seed(42)
+        n_blocks, block_size, n_head_kv, head_dim = 16, 4, 2, 8
+        n_layers = 2
+        batch = 2
+        seq_len = 6  # Uniform sequence length
+        layer = 0
+
+        # Block tables: [n_layers, batch, max_blocks]
+        # seq 0 uses blocks [0, 1], seq 1 uses blocks [2, 3]
+        block_tables = np.array(
+            [
+                [[0, 1, 0, 0], [2, 3, 0, 0]],  # layer 0
+                [[4, 5, 0, 0], [6, 7, 0, 0]],  # layer 1
+            ],
+            dtype=np.int32,
+        )
+        start_positions = np.array([0, 0], dtype=np.int32)  # Starting from position 0
+
+        # Allocate caches
+        alloc_args = VmVariantList(4)
+        alloc_args.push_int(n_blocks)
+        alloc_args.push_int(block_size)
+        alloc_args.push_int(n_head_kv)
+        alloc_args.push_int(head_dim)
+        alloc_func = kvcache_module.lookup_function("allocate")
+        alloc_results = VmVariantList(1)
+        kvcache_module._context.invoke(alloc_func, alloc_args, alloc_results)
+        cache = alloc_results.get_as_list(0)
+
+        k_oracle, v_oracle = allocate_oracle(n_blocks, block_size, n_head_kv, head_dim)
+
+        # Create new K/V data [batch, seq_len, n_head_kv, head_dim]
+        new_k = np.random.randn(batch, seq_len, n_head_kv, head_dim).astype(np.float32)
+        new_v = np.random.randn(batch, seq_len, n_head_kv, head_dim).astype(np.float32)
+
+        # Call MLIR scatter_prefill
+        scatter_args = VmVariantList(7)
+        scatter_args.push_list(cache)
+        scatter_args.push_int(layer)
+        scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_k))
+        scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_v))
+        scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(block_tables))
+        scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(start_positions))
+        scatter_args.push_int(block_size)
+        scatter_func = kvcache_module.lookup_function("scatter_prefill")
+        scatter_results = VmVariantList(1)
+        kvcache_module._context.invoke(scatter_func, scatter_args, scatter_results)
+
+        # Get updated cache
+        updated_cache = scatter_results.get_as_list(0)
+        k_updated = kvcache_module._buffer_view_to_numpy(
+            updated_cache.get_as_object(0, HalBufferView)
+        )
+        v_updated = kvcache_module._buffer_view_to_numpy(
+            updated_cache.get_as_object(1, HalBufferView)
+        )
+
+        # Oracle
+        k_expected = scatter_prefill_oracle(
+            k_oracle, layer, new_k, block_tables, start_positions, block_size
+        )
+        v_expected = scatter_prefill_oracle(
+            v_oracle, layer, new_v, block_tables, start_positions, block_size
+        )
+
+        assert_close(k_updated, k_expected)
+        assert_close(v_updated, v_expected)
+
+        # Verify specific positions were written correctly
+        # seq 0, token 0 -> block 0, pos 0
+        assert_close(k_updated[0, 0, :, :], new_k[0, 0, :, :])
+        # seq 0, token 4 -> block 1, pos 0
+        assert_close(k_updated[1, 0, :, :], new_k[0, 4, :, :])
+        # seq 1, token 0 -> block 2, pos 0
+        assert_close(k_updated[2, 0, :, :], new_k[1, 0, :, :])
+        # seq 1, token 5 -> block 3, pos 1
+        assert_close(k_updated[3, 1, :, :], new_k[1, 5, :, :])
+
+    def test_with_start_offset(self, kvcache_module):
+        """Test scatter_prefill with non-zero start positions (continuation)."""
+        np.random.seed(123)
+        n_blocks, block_size, n_head_kv, head_dim = 16, 4, 2, 8
+        n_layers = 1
+        batch = 2
+        seq_len = 4
+        layer = 0
+
+        # Block tables: each sequence uses blocks that can hold existing + new tokens
+        block_tables = np.array(
+            [
+                [[0, 1, 2, 0], [3, 4, 5, 0]],  # layer 0
+            ],
+            dtype=np.int32,
+        )
+        # Simulate continuation: seq 0 has 3 tokens, seq 1 has 5 tokens already
+        start_positions = np.array([3, 5], dtype=np.int32)
+
+        # Allocate caches
+        alloc_args = VmVariantList(4)
+        alloc_args.push_int(n_blocks)
+        alloc_args.push_int(block_size)
+        alloc_args.push_int(n_head_kv)
+        alloc_args.push_int(head_dim)
+        alloc_func = kvcache_module.lookup_function("allocate")
+        alloc_results = VmVariantList(1)
+        kvcache_module._context.invoke(alloc_func, alloc_args, alloc_results)
+        cache = alloc_results.get_as_list(0)
+
+        k_oracle, v_oracle = allocate_oracle(n_blocks, block_size, n_head_kv, head_dim)
+
+        # New K/V data to append
+        new_k = np.random.randn(batch, seq_len, n_head_kv, head_dim).astype(np.float32)
+        new_v = np.random.randn(batch, seq_len, n_head_kv, head_dim).astype(np.float32)
+
+        # Call MLIR scatter_prefill
+        scatter_args = VmVariantList(7)
+        scatter_args.push_list(cache)
+        scatter_args.push_int(layer)
+        scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_k))
+        scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_v))
+        scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(block_tables))
+        scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(start_positions))
+        scatter_args.push_int(block_size)
+        scatter_func = kvcache_module.lookup_function("scatter_prefill")
+        scatter_results = VmVariantList(1)
+        kvcache_module._context.invoke(scatter_func, scatter_args, scatter_results)
+
+        # Get updated cache
+        updated_cache = scatter_results.get_as_list(0)
+        k_updated = kvcache_module._buffer_view_to_numpy(
+            updated_cache.get_as_object(0, HalBufferView)
+        )
+
+        # Oracle
+        k_expected = scatter_prefill_oracle(
+            k_oracle, layer, new_k, block_tables, start_positions, block_size
+        )
+
+        assert_close(k_updated, k_expected)
+
+        # Verify specific positions:
+        # seq 0: start_pos=3, so token 0 -> abs_pos 3 -> block 0, pos 3
+        assert_close(k_updated[0, 3, :, :], new_k[0, 0, :, :])
+        # seq 0: token 1 -> abs_pos 4 -> block 1, pos 0
+        assert_close(k_updated[1, 0, :, :], new_k[0, 1, :, :])
+        # seq 1: start_pos=5, so token 0 -> abs_pos 5 -> block 4, pos 1
+        assert_close(k_updated[4, 1, :, :], new_k[1, 0, :, :])
 
 
 class TestRoundTrip:
@@ -307,7 +506,9 @@ class TestRoundTrip:
         """Test that scatter followed by gather recovers the data correctly."""
         np.random.seed(42)
         n_blocks, block_size, n_head_kv, head_dim = 16, 4, 4, 16
+        n_layers = 1
         batch = 2
+        layer = 0
 
         # Allocate
         alloc_args = VmVariantList(4)
@@ -337,8 +538,9 @@ class TestRoundTrip:
             k_oracle[blk, pos, :, :] = new_k[0]
             v_oracle[blk, pos, :, :] = new_v[0]
 
-            scatter_args = VmVariantList(5)
+            scatter_args = VmVariantList(6)
             scatter_args.push_list(cache)
+            scatter_args.push_int(layer)
             scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_k))
             scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_v))
             scatter_args.push_ref(
@@ -361,8 +563,9 @@ class TestRoundTrip:
             k_oracle[blk, pos, :, :] = new_k[0]
             v_oracle[blk, pos, :, :] = new_v[0]
 
-            scatter_args = VmVariantList(5)
+            scatter_args = VmVariantList(6)
             scatter_args.push_list(cache)
+            scatter_args.push_int(layer)
             scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_k))
             scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_v))
             scatter_args.push_ref(
@@ -375,19 +578,22 @@ class TestRoundTrip:
             kvcache_module._context.invoke(scatter_func, scatter_args, scatter_results)
             cache = scatter_results.get_as_list(0)
 
-        # Now gather using block tables
+        # Now gather using block tables - [n_layers, batch, max_blocks]
         block_tables = np.array(
             [
-                [0, 1, 0, 0],  # seq 0 uses blocks 0, 1
-                [2, 3, 0, 0],  # seq 1 uses blocks 2, 3
+                [
+                    [0, 1, 0, 0],  # seq 0 uses blocks 0, 1
+                    [2, 3, 0, 0],  # seq 1 uses blocks 2, 3
+                ],
             ],
             dtype=np.int32,
         )
-        context_lens = np.array([6, 5], dtype=np.int32)
+        context_lens = np.array([[6, 5]], dtype=np.int32)  # [n_layers, batch]
         max_context_len = 8
 
-        gather_args = VmVariantList(4)
+        gather_args = VmVariantList(5)
         gather_args.push_list(cache)
+        gather_args.push_int(layer)
         gather_args.push_ref(kvcache_module._numpy_to_buffer_view(block_tables))
         gather_args.push_ref(kvcache_module._numpy_to_buffer_view(context_lens))
         gather_args.push_int(max_context_len)
@@ -403,8 +609,12 @@ class TestRoundTrip:
         )
 
         # Compare against oracle
-        k_expected = gather_oracle(k_oracle, block_tables, context_lens, max_context_len)
-        v_expected = gather_oracle(v_oracle, block_tables, context_lens, max_context_len)
+        k_expected = gather_oracle(
+            k_oracle, layer, block_tables, context_lens, max_context_len
+        )
+        v_expected = gather_oracle(
+            v_oracle, layer, block_tables, context_lens, max_context_len
+        )
 
         assert_close(k_gathered, k_expected)
         assert_close(v_gathered, v_expected)
@@ -413,7 +623,9 @@ class TestRoundTrip:
         """Test a realistic decode step: existing context + one new token per sequence."""
         np.random.seed(123)
         n_blocks, block_size, n_head_kv, head_dim = 16, 4, 2, 8
+        n_layers = 1
         batch = 2
+        layer = 0
 
         # Allocate
         alloc_args = VmVariantList(4)
@@ -438,8 +650,9 @@ class TestRoundTrip:
             k_oracle[blk, pos, :, :] = new_k[0]
             v_oracle[blk, pos, :, :] = new_v[0]
 
-            scatter_args = VmVariantList(5)
+            scatter_args = VmVariantList(6)
             scatter_args.push_list(cache)
+            scatter_args.push_int(layer)
             scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_k))
             scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_v))
             scatter_args.push_ref(
@@ -461,8 +674,9 @@ class TestRoundTrip:
             k_oracle[blk, pos, :, :] = new_k[0]
             v_oracle[blk, pos, :, :] = new_v[0]
 
-            scatter_args = VmVariantList(5)
+            scatter_args = VmVariantList(6)
             scatter_args.push_list(cache)
+            scatter_args.push_int(layer)
             scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_k))
             scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_v))
             scatter_args.push_ref(
@@ -489,8 +703,9 @@ class TestRoundTrip:
         k_oracle[3, 1, :, :] = new_k_decode[1]
         v_oracle[3, 1, :, :] = new_v_decode[1]
 
-        scatter_args = VmVariantList(5)
+        scatter_args = VmVariantList(6)
         scatter_args.push_list(cache)
+        scatter_args.push_int(layer)
         scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_k_decode))
         scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_v_decode))
         scatter_args.push_ref(
@@ -503,19 +718,22 @@ class TestRoundTrip:
         kvcache_module._context.invoke(scatter_func, scatter_args, scatter_results)
         cache = scatter_results.get_as_list(0)
 
-        # Gather with updated context lengths (7, 6)
+        # Gather with updated context lengths (7, 6) - [n_layers, batch, max_blocks]
         block_tables = np.array(
             [
-                [0, 1, 0, 0],  # seq 0
-                [2, 3, 0, 0],  # seq 1
+                [
+                    [0, 1, 0, 0],  # seq 0
+                    [2, 3, 0, 0],  # seq 1
+                ],
             ],
             dtype=np.int32,
         )
-        context_lens = np.array([7, 6], dtype=np.int32)  # After adding one token each
+        context_lens = np.array([[7, 6]], dtype=np.int32)  # After adding one token each
         max_context_len = 8
 
-        gather_args = VmVariantList(4)
+        gather_args = VmVariantList(5)
         gather_args.push_list(cache)
+        gather_args.push_int(layer)
         gather_args.push_ref(kvcache_module._numpy_to_buffer_view(block_tables))
         gather_args.push_ref(kvcache_module._numpy_to_buffer_view(context_lens))
         gather_args.push_int(max_context_len)
@@ -527,7 +745,9 @@ class TestRoundTrip:
             gather_results.get_as_object(0, HalBufferView)
         )
 
-        k_expected = gather_oracle(k_oracle, block_tables, context_lens, max_context_len)
+        k_expected = gather_oracle(
+            k_oracle, layer, block_tables, context_lens, max_context_len
+        )
 
         # Verify the newly added tokens are present
         # Seq 0, position 6 should be new_k_decode[0]
@@ -546,19 +766,23 @@ class TestBlockTableIndirection:
         """Test gather with non-sequential block assignments (e.g., seq 0 uses [3, 7, 1])."""
         np.random.seed(456)
         n_blocks, block_size, n_head_kv, head_dim = 16, 4, 2, 8
+        n_layers = 1
         batch = 2
+        layer = 0
 
-        # Non-sequential block assignments
+        # Non-sequential block assignments - [n_layers, batch, max_blocks]
         # Seq 0: uses blocks [3, 7, 1] (in that order)
         # Seq 1: uses blocks [5, 2, 9]
         block_tables = np.array(
             [
-                [3, 7, 1, 0],
-                [5, 2, 9, 0],
+                [
+                    [3, 7, 1, 0],
+                    [5, 2, 9, 0],
+                ],
             ],
             dtype=np.int32,
         )
-        context_lens = np.array([10, 8], dtype=np.int32)
+        context_lens = np.array([[10, 8]], dtype=np.int32)  # [n_layers, batch]
         max_context_len = 12
 
         # Allocate
@@ -583,15 +807,20 @@ class TestBlockTableIndirection:
                 k_oracle[blk, pos, :, :] = new_k[0]
                 v_oracle[blk, pos, :, :] = new_v[0]
 
-                scatter_args = VmVariantList(5)
+                scatter_args = VmVariantList(6)
                 scatter_args.push_list(cache)
+                scatter_args.push_int(layer)
                 scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_k))
                 scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_v))
                 scatter_args.push_ref(
-                    kvcache_module._numpy_to_buffer_view(np.array([blk], dtype=np.int32))
+                    kvcache_module._numpy_to_buffer_view(
+                        np.array([blk], dtype=np.int32)
+                    )
                 )
                 scatter_args.push_ref(
-                    kvcache_module._numpy_to_buffer_view(np.array([pos], dtype=np.int32))
+                    kvcache_module._numpy_to_buffer_view(
+                        np.array([pos], dtype=np.int32)
+                    )
                 )
                 scatter_results = VmVariantList(1)
                 kvcache_module._context.invoke(
@@ -600,8 +829,9 @@ class TestBlockTableIndirection:
                 cache = scatter_results.get_as_list(0)
 
         # Gather
-        gather_args = VmVariantList(4)
+        gather_args = VmVariantList(5)
         gather_args.push_list(cache)
+        gather_args.push_int(layer)
         gather_args.push_ref(kvcache_module._numpy_to_buffer_view(block_tables))
         gather_args.push_ref(kvcache_module._numpy_to_buffer_view(context_lens))
         gather_args.push_int(max_context_len)
@@ -613,7 +843,9 @@ class TestBlockTableIndirection:
             gather_results.get_as_object(0, HalBufferView)
         )
 
-        k_expected = gather_oracle(k_oracle, block_tables, context_lens, max_context_len)
+        k_expected = gather_oracle(
+            k_oracle, layer, block_tables, context_lens, max_context_len
+        )
 
         # Verify indirection is working: seq 0, position 0 should come from block 3, pos 0
         assert_close(k_gathered[0, 0, :, :], k_oracle[3, 0, :, :])
@@ -624,3 +856,116 @@ class TestBlockTableIndirection:
 
         # Full comparison
         assert_close(k_gathered, k_expected)
+
+
+class TestMultiLayer:
+    """Tests for layer-aware operations."""
+
+    def test_different_layers(self, kvcache_module):
+        """Test that different layers can have different block_tables/context_lens."""
+        np.random.seed(789)
+        n_blocks, block_size, n_head_kv, head_dim = 16, 4, 2, 8
+        n_layers = 2
+        batch = 2
+        max_context_len = 8
+
+        # Different block assignments and context lengths per layer
+        block_tables = np.array(
+            [
+                [[0, 1, 0, 0], [2, 3, 0, 0]],  # layer 0: seq 0 -> [0,1], seq 1 -> [2,3]
+                [[4, 5, 0, 0], [6, 7, 0, 0]],  # layer 1: seq 0 -> [4,5], seq 1 -> [6,7]
+            ],
+            dtype=np.int32,
+        )
+        context_lens = np.array(
+            [[6, 5], [7, 4]],  # Different context lengths per layer
+            dtype=np.int32,
+        )
+
+        # Allocate
+        alloc_args = VmVariantList(4)
+        alloc_args.push_int(n_blocks)
+        alloc_args.push_int(block_size)
+        alloc_args.push_int(n_head_kv)
+        alloc_args.push_int(head_dim)
+        alloc_func = kvcache_module.lookup_function("allocate")
+        alloc_results = VmVariantList(1)
+        kvcache_module._context.invoke(alloc_func, alloc_args, alloc_results)
+        cache = alloc_results.get_as_list(0)
+
+        k_oracle, v_oracle = allocate_oracle(n_blocks, block_size, n_head_kv, head_dim)
+
+        # Fill all blocks with random data
+        scatter_func = kvcache_module.lookup_function("scatter_decode")
+        for blk in range(8):
+            for pos in range(block_size):
+                new_k = np.random.randn(1, n_head_kv, head_dim).astype(np.float32)
+                new_v = np.random.randn(1, n_head_kv, head_dim).astype(np.float32)
+                k_oracle[blk, pos, :, :] = new_k[0]
+                v_oracle[blk, pos, :, :] = new_v[0]
+
+                scatter_args = VmVariantList(6)
+                scatter_args.push_list(cache)
+                scatter_args.push_int(0)  # layer doesn't matter for scatter_decode
+                scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_k))
+                scatter_args.push_ref(kvcache_module._numpy_to_buffer_view(new_v))
+                scatter_args.push_ref(
+                    kvcache_module._numpy_to_buffer_view(
+                        np.array([blk], dtype=np.int32)
+                    )
+                )
+                scatter_args.push_ref(
+                    kvcache_module._numpy_to_buffer_view(
+                        np.array([pos], dtype=np.int32)
+                    )
+                )
+                scatter_results = VmVariantList(1)
+                kvcache_module._context.invoke(
+                    scatter_func, scatter_args, scatter_results
+                )
+                cache = scatter_results.get_as_list(0)
+
+        # Gather from layer 0
+        gather_args = VmVariantList(5)
+        gather_args.push_list(cache)
+        gather_args.push_int(0)
+        gather_args.push_ref(kvcache_module._numpy_to_buffer_view(block_tables))
+        gather_args.push_ref(kvcache_module._numpy_to_buffer_view(context_lens))
+        gather_args.push_int(max_context_len)
+        gather_func = kvcache_module.lookup_function("gather")
+        gather_results = VmVariantList(2)
+        kvcache_module._context.invoke(gather_func, gather_args, gather_results)
+
+        k_layer0 = kvcache_module._buffer_view_to_numpy(
+            gather_results.get_as_object(0, HalBufferView)
+        )
+
+        # Gather from layer 1
+        gather_args = VmVariantList(5)
+        gather_args.push_list(cache)
+        gather_args.push_int(1)
+        gather_args.push_ref(kvcache_module._numpy_to_buffer_view(block_tables))
+        gather_args.push_ref(kvcache_module._numpy_to_buffer_view(context_lens))
+        gather_args.push_int(max_context_len)
+        gather_results = VmVariantList(2)
+        kvcache_module._context.invoke(gather_func, gather_args, gather_results)
+
+        k_layer1 = kvcache_module._buffer_view_to_numpy(
+            gather_results.get_as_object(0, HalBufferView)
+        )
+
+        # Verify layers use different block mappings
+        k_expected_layer0 = gather_oracle(
+            k_oracle, 0, block_tables, context_lens, max_context_len
+        )
+        k_expected_layer1 = gather_oracle(
+            k_oracle, 1, block_tables, context_lens, max_context_len
+        )
+
+        assert_close(k_layer0, k_expected_layer0)
+        assert_close(k_layer1, k_expected_layer1)
+
+        # Layer 0, seq 0, pos 0 should come from block 0
+        assert_close(k_layer0[0, 0, :, :], k_oracle[0, 0, :, :])
+        # Layer 1, seq 0, pos 0 should come from block 4
+        assert_close(k_layer1[0, 0, :, :], k_oracle[4, 0, :, :])
