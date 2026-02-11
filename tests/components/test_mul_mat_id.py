@@ -18,7 +18,7 @@ def test_single_expert(mul_mat_id_module):
     n_out, n_in, n_expert = 4, 3, 8
     n_expert_used, n_tokens = 1, 2
 
-    weights = np.random.randn(n_out, n_in, n_expert).astype(np.float32) * 0.1
+    weights = np.random.randn(n_expert, n_out, n_in).astype(np.float32) * 0.1
     input = np.random.randn(n_in, n_expert_used, n_tokens).astype(np.float32) * 0.1
     ids = np.array(
         [[0, 3]], dtype=np.int32
@@ -36,7 +36,7 @@ def test_two_experts(mul_mat_id_module):
     n_out, n_in, n_expert = 8, 4, 8
     n_expert_used, n_tokens = 2, 4
 
-    weights = np.random.randn(n_out, n_in, n_expert).astype(np.float32) * 0.1
+    weights = np.random.randn(n_expert, n_out, n_in).astype(np.float32) * 0.1
     input = np.random.randn(n_in, n_expert_used, n_tokens).astype(np.float32) * 0.1
     # Each column is [expert_slot_0, expert_slot_1] for that token
     ids = np.array(
@@ -59,7 +59,7 @@ def test_same_expert_all_tokens(mul_mat_id_module):
     n_out, n_in, n_expert = 6, 4, 4
     n_expert_used, n_tokens = 1, 3
 
-    weights = np.random.randn(n_out, n_in, n_expert).astype(np.float32) * 0.1
+    weights = np.random.randn(n_expert, n_out, n_in).astype(np.float32) * 0.1
     input = np.random.randn(n_in, n_expert_used, n_tokens).astype(np.float32) * 0.1
     ids = np.array([[2, 2, 2]], dtype=np.int32)  # all tokens use expert 2
 
@@ -75,7 +75,7 @@ def test_larger_dimensions(mul_mat_id_module):
     n_out, n_in, n_expert = 64, 32, 8
     n_expert_used, n_tokens = 2, 16
 
-    weights = np.random.randn(n_out, n_in, n_expert).astype(np.float32) * 0.1
+    weights = np.random.randn(n_expert, n_out, n_in).astype(np.float32) * 0.1
     input = np.random.randn(n_in, n_expert_used, n_tokens).astype(np.float32) * 0.1
     ids = np.random.randint(0, n_expert, size=(n_expert_used, n_tokens), dtype=np.int32)
 

@@ -34,9 +34,9 @@ module @moe_ffn_components {
   util.func public @moe_ffn_block(
       %input: tensor<?x?xf32>,          // [n_tokens, n_embd] (flattened batch*seq)
       %gate_inp_w: tensor<?x?xf32>,     // Router weights [n_expert, n_embd]
-      %up_exps_w: tensor<?x?x?xf32>,    // Expert up [n_ff, n_embd, n_expert]
-      %gate_exps_w: tensor<?x?x?xf32>,  // Expert gate [n_ff, n_embd, n_expert]
-      %down_exps_w: tensor<?x?x?xf32>,  // Expert down [n_embd, n_ff, n_expert]
+      %up_exps_w: tensor<?x?x?xf32>,    // Expert up [n_expert, n_ff, n_embd]
+      %gate_exps_w: tensor<?x?x?xf32>,  // Expert gate [n_expert, n_ff, n_embd]
+      %down_exps_w: tensor<?x?x?xf32>,  // Expert down [n_expert, n_embd, n_ff]
       %n_expert: index,                  // Total experts (8 for Mixtral)
       %n_expert_used: index,             // Top-k (2 for Mixtral)
       %n_embd: index,

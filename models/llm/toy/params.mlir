@@ -208,42 +208,42 @@ module @model_params {
   util.func public @ffn_up_exps_weight(%layer: i32) -> tensor<?x?x?xf32> {
     %c0 = arith.constant 0 : i32
     %is_layer0 = arith.cmpi eq, %layer, %c0 : i32
-    %w = scf.if %is_layer0 -> (tensor<128x64x4xf32>) {
-      %w0 = flow.tensor.constant #flow.parameter.named<"model"::"blk.0.ffn_up_exps.weight"> : tensor<128x64x4xf32>
-      scf.yield %w0 : tensor<128x64x4xf32>
+    %w = scf.if %is_layer0 -> (tensor<4x128x64xf32>) {
+      %w0 = flow.tensor.constant #flow.parameter.named<"model"::"blk.0.ffn_up_exps.weight"> : tensor<4x128x64xf32>
+      scf.yield %w0 : tensor<4x128x64xf32>
     } else {
-      %w1 = flow.tensor.constant #flow.parameter.named<"model"::"blk.1.ffn_up_exps.weight"> : tensor<128x64x4xf32>
-      scf.yield %w1 : tensor<128x64x4xf32>
+      %w1 = flow.tensor.constant #flow.parameter.named<"model"::"blk.1.ffn_up_exps.weight"> : tensor<4x128x64xf32>
+      scf.yield %w1 : tensor<4x128x64xf32>
     }
-    %dyn = tensor.cast %w : tensor<128x64x4xf32> to tensor<?x?x?xf32>
+    %dyn = tensor.cast %w : tensor<4x128x64xf32> to tensor<?x?x?xf32>
     util.return %dyn : tensor<?x?x?xf32>
   }
 
   util.func public @ffn_gate_exps_weight(%layer: i32) -> tensor<?x?x?xf32> {
     %c0 = arith.constant 0 : i32
     %is_layer0 = arith.cmpi eq, %layer, %c0 : i32
-    %w = scf.if %is_layer0 -> (tensor<128x64x4xf32>) {
-      %w0 = flow.tensor.constant #flow.parameter.named<"model"::"blk.0.ffn_gate_exps.weight"> : tensor<128x64x4xf32>
-      scf.yield %w0 : tensor<128x64x4xf32>
+    %w = scf.if %is_layer0 -> (tensor<4x128x64xf32>) {
+      %w0 = flow.tensor.constant #flow.parameter.named<"model"::"blk.0.ffn_gate_exps.weight"> : tensor<4x128x64xf32>
+      scf.yield %w0 : tensor<4x128x64xf32>
     } else {
-      %w1 = flow.tensor.constant #flow.parameter.named<"model"::"blk.1.ffn_gate_exps.weight"> : tensor<128x64x4xf32>
-      scf.yield %w1 : tensor<128x64x4xf32>
+      %w1 = flow.tensor.constant #flow.parameter.named<"model"::"blk.1.ffn_gate_exps.weight"> : tensor<4x128x64xf32>
+      scf.yield %w1 : tensor<4x128x64xf32>
     }
-    %dyn = tensor.cast %w : tensor<128x64x4xf32> to tensor<?x?x?xf32>
+    %dyn = tensor.cast %w : tensor<4x128x64xf32> to tensor<?x?x?xf32>
     util.return %dyn : tensor<?x?x?xf32>
   }
 
   util.func public @ffn_down_exps_weight(%layer: i32) -> tensor<?x?x?xf32> {
     %c0 = arith.constant 0 : i32
     %is_layer0 = arith.cmpi eq, %layer, %c0 : i32
-    %w = scf.if %is_layer0 -> (tensor<64x128x4xf32>) {
-      %w0 = flow.tensor.constant #flow.parameter.named<"model"::"blk.0.ffn_down_exps.weight"> : tensor<64x128x4xf32>
-      scf.yield %w0 : tensor<64x128x4xf32>
+    %w = scf.if %is_layer0 -> (tensor<4x64x128xf32>) {
+      %w0 = flow.tensor.constant #flow.parameter.named<"model"::"blk.0.ffn_down_exps.weight"> : tensor<4x64x128xf32>
+      scf.yield %w0 : tensor<4x64x128xf32>
     } else {
-      %w1 = flow.tensor.constant #flow.parameter.named<"model"::"blk.1.ffn_down_exps.weight"> : tensor<64x128x4xf32>
-      scf.yield %w1 : tensor<64x128x4xf32>
+      %w1 = flow.tensor.constant #flow.parameter.named<"model"::"blk.1.ffn_down_exps.weight"> : tensor<4x64x128xf32>
+      scf.yield %w1 : tensor<4x64x128xf32>
     }
-    %dyn = tensor.cast %w : tensor<64x128x4xf32> to tensor<?x?x?xf32>
+    %dyn = tensor.cast %w : tensor<4x64x128xf32> to tensor<?x?x?xf32>
     util.return %dyn : tensor<?x?x?xf32>
   }
 

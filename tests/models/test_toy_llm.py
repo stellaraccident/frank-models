@@ -113,13 +113,13 @@ def generate_toy_params(seed: int = 42) -> dict[str, np.ndarray]:
             (cfg["n_expert"], cfg["n_embd"])
         ).astype(np.float32)
         params[f"{prefix}.ffn_up_exps.weight"] = rng.standard_normal(
-            (cfg["n_ff"], cfg["n_embd"], cfg["n_expert"])
+            (cfg["n_expert"], cfg["n_ff"], cfg["n_embd"])
         ).astype(np.float32)
         params[f"{prefix}.ffn_gate_exps.weight"] = rng.standard_normal(
-            (cfg["n_ff"], cfg["n_embd"], cfg["n_expert"])
+            (cfg["n_expert"], cfg["n_ff"], cfg["n_embd"])
         ).astype(np.float32)
         params[f"{prefix}.ffn_down_exps.weight"] = rng.standard_normal(
-            (cfg["n_embd"], cfg["n_ff"], cfg["n_expert"])
+            (cfg["n_expert"], cfg["n_embd"], cfg["n_ff"])
         ).astype(np.float32)
 
     return params

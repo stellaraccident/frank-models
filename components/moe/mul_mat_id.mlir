@@ -13,14 +13,14 @@
 //
 // For each token t and each selected expert slot e:
 //   expert_id = ids[e, t]
-//   result[:, e, t] = weights[:, :, expert_id] @ input[:, e, t]
+//   result[:, e, t] = weights[expert_id] @ input[:, e, t]
 //
-// Decomposed into: transpose → gather → reshape → batch_matmul → reshape.
+// Decomposed into: gather → reshape → batch_matmul → reshape.
 
 module @moe_components {
 
   util.func public @mul_mat_id(
-      %weights: tensor<?x?x?xf32>,      // Expert weights [n_out, n_in, n_expert]
+      %weights: tensor<?x?x?xf32>,      // Expert weights [n_expert, n_out, n_in]
       %input: tensor<?x?x?xf32>,        // Input [n_in, n_expert_used, n_tokens]
       %ids: tensor<?x?xi32>             // Expert indices [n_expert_used, n_tokens]
   ) -> tensor<?x?x?xf32> {              // Output [n_out, n_expert_used, n_tokens]
@@ -28,39 +28,27 @@ module @moe_components {
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
 
-    %n_out = tensor.dim %weights, %c0 : tensor<?x?x?xf32>
-    %n_in = tensor.dim %weights, %c1 : tensor<?x?x?xf32>
-    %n_expert = tensor.dim %weights, %c2 : tensor<?x?x?xf32>
+    %n_expert = tensor.dim %weights, %c0 : tensor<?x?x?xf32>
+    %n_out = tensor.dim %weights, %c1 : tensor<?x?x?xf32>
+    %n_in = tensor.dim %weights, %c2 : tensor<?x?x?xf32>
     %n_expert_used = tensor.dim %input, %c1 : tensor<?x?x?xf32>
     %n_tokens = tensor.dim %input, %c2 : tensor<?x?x?xf32>
 
-    // Step 1: Transpose expert weights to put expert dim first: [n_expert, n_out, n_in].
-    %weights_t_init = tensor.empty(%n_expert, %n_out, %n_in) : tensor<?x?x?xf32>
-    %weights_t = linalg.generic {
-      indexing_maps = [
-        affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
-        affine_map<(d0, d1, d2) -> (d2, d0, d1)>
-      ],
-      iterator_types = ["parallel", "parallel", "parallel"]
-    } ins(%weights : tensor<?x?x?xf32>) outs(%weights_t_init : tensor<?x?x?xf32>) {
-    ^bb0(%in: f32, %out: f32):
-      linalg.yield %in : f32
-    } -> tensor<?x?x?xf32>
-
-    // Step 2: Flatten indices for batched gather: [n_expert_used * n_tokens].
+    // Step 1: Flatten indices for batched gather: [n_expert_used * n_tokens].
     %batch_size = arith.muli %n_expert_used, %n_tokens : index
     %ids_flat = tensor.collapse_shape %ids [[0, 1]]
       : tensor<?x?xi32> into tensor<?xi32>
 
-    // Step 3: Gather expert matrices based on flattened indices.
+    // Step 2: Gather expert matrices based on flattened indices.
+    // Weights are [n_expert, n_out, n_in], gather along dim 0.
     // Output: [n_expert_used * n_tokens, n_out, n_in].
     %gathered_init = tensor.empty(%batch_size, %n_out, %n_in) : tensor<?x?x?xf32>
     %weights_gathered = iree_linalg_ext.gather dimension_map = [0]
-      ins(%weights_t, %ids_flat : tensor<?x?x?xf32>, tensor<?xi32>)
+      ins(%weights, %ids_flat : tensor<?x?x?xf32>, tensor<?xi32>)
       outs(%gathered_init : tensor<?x?x?xf32>)
       -> tensor<?x?x?xf32>
 
-    // Step 4: Reshape input for batched matmul.
+    // Step 3: Reshape input for batched matmul.
     // Transpose input: [n_in, n_expert_used, n_tokens] -> [n_expert_used, n_tokens, n_in].
     %input_perm_init = tensor.empty(%n_expert_used, %n_tokens, %n_in) : tensor<?x?x?xf32>
     %input_perm = linalg.generic {
@@ -83,7 +71,7 @@ module @moe_components {
       output_shape [%batch_size, %n_in, %c1]
       : tensor<?x?xf32> into tensor<?x?x1xf32>
 
-    // Step 5: Batched matrix-vector multiply.
+    // Step 4: Batched matrix-vector multiply.
     // [batch, n_out, n_in] @ [batch, n_in, 1] -> [batch, n_out, 1]
     %zero = arith.constant 0.0 : f32
     %result_batched_init = tensor.empty(%batch_size, %n_out) : tensor<?x?x1xf32>
@@ -93,7 +81,7 @@ module @moe_components {
       outs(%result_batched_filled : tensor<?x?x1xf32>)
       -> tensor<?x?x1xf32>
 
-    // Step 6: Reshape to final output [n_out, n_expert_used, n_tokens].
+    // Step 5: Reshape to final output [n_out, n_expert_used, n_tokens].
     // Collapse [batch, n_out, 1] to [batch, n_out].
     %result_squeezed = tensor.collapse_shape %result_batched [[0], [1, 2]]
       : tensor<?x?x1xf32> into tensor<?x?xf32>

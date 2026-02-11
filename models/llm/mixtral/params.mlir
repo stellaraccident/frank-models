@@ -365,20 +365,20 @@ module @model_params {
   }
 
   util.func public @ffn_up_exps_weight(%layer: i32) -> tensor<?x?x?xf32> {
-    %w = flow.tensor.constant #flow.parameter.named<"model"::"blk.0.ffn_up_exps.weight"> : tensor<14336x4096x8xf32>
-    %dyn = tensor.cast %w : tensor<14336x4096x8xf32> to tensor<?x?x?xf32>
+    %w = flow.tensor.constant #flow.parameter.named<"model"::"blk.0.ffn_up_exps.weight"> : tensor<8x14336x4096xf32>
+    %dyn = tensor.cast %w : tensor<8x14336x4096xf32> to tensor<?x?x?xf32>
     util.return %dyn : tensor<?x?x?xf32>
   }
 
   util.func public @ffn_gate_exps_weight(%layer: i32) -> tensor<?x?x?xf32> {
-    %w = flow.tensor.constant #flow.parameter.named<"model"::"blk.0.ffn_gate_exps.weight"> : tensor<14336x4096x8xf32>
-    %dyn = tensor.cast %w : tensor<14336x4096x8xf32> to tensor<?x?x?xf32>
+    %w = flow.tensor.constant #flow.parameter.named<"model"::"blk.0.ffn_gate_exps.weight"> : tensor<8x14336x4096xf32>
+    %dyn = tensor.cast %w : tensor<8x14336x4096xf32> to tensor<?x?x?xf32>
     util.return %dyn : tensor<?x?x?xf32>
   }
 
   util.func public @ffn_down_exps_weight(%layer: i32) -> tensor<?x?x?xf32> {
-    %w = flow.tensor.constant #flow.parameter.named<"model"::"blk.0.ffn_down_exps.weight"> : tensor<4096x14336x8xf32>
-    %dyn = tensor.cast %w : tensor<4096x14336x8xf32> to tensor<?x?x?xf32>
+    %w = flow.tensor.constant #flow.parameter.named<"model"::"blk.0.ffn_down_exps.weight"> : tensor<8x4096x14336xf32>
+    %dyn = tensor.cast %w : tensor<8x4096x14336xf32> to tensor<?x?x?xf32>
     util.return %dyn : tensor<?x?x?xf32>
   }
 

@@ -17,7 +17,7 @@ def mul_mat_id(
     batched matrix multiplication. Core primitive for MoE layers.
 
     Args:
-        weights: Expert weight matrices [n_out, n_in, n_expert]
+        weights: Expert weight matrices [n_expert, n_out, n_in]
         input: Input activations [n_in, n_expert_used, n_tokens]
         ids: Expert indices [n_expert_used, n_tokens] (int32)
 
@@ -26,15 +26,12 @@ def mul_mat_id(
 
     Reference: components/moe/mul_mat_id.mlir
     """
-    n_out, n_in, n_expert = weights.shape
+    n_expert, n_out, n_in = weights.shape
     n_expert_used, n_tokens = ids.shape
-
-    # Transpose weights for easier indexing: [n_expert, n_out, n_in]
-    weights_t = weights.transpose(2, 0, 1)
 
     # Gather: select expert matrices based on ids
     # gathered shape: [n_expert_used, n_tokens, n_out, n_in]
-    gathered = weights_t[ids]
+    gathered = weights[ids]
 
     # Reshape input: [n_in, n_expert_used, n_tokens] -> [n_expert_used, n_tokens, n_in]
     input_t = input.transpose(1, 2, 0)
@@ -65,9 +62,9 @@ def moe_ffn_block(
     Args:
         input: Token embeddings [n_tokens, n_embd]
         gate_inp_w: Router weights [n_expert, n_embd]
-        up_exps_w: Expert up projections [n_ff, n_embd, n_expert]
-        gate_exps_w: Expert gate projections [n_ff, n_embd, n_expert]
-        down_exps_w: Expert down projections [n_embd, n_ff, n_expert]
+        up_exps_w: Expert up projections [n_expert, n_ff, n_embd]
+        gate_exps_w: Expert gate projections [n_expert, n_ff, n_embd]
+        down_exps_w: Expert down projections [n_expert, n_embd, n_ff]
         n_expert: Total number of experts
         n_expert_used: Top-k experts per token
         n_embd: Embedding dimension
