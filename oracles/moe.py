@@ -6,45 +6,6 @@ Reference implementations matching MLIR semantics in components/moe/.
 import numpy as np
 
 
-def mul_mat_id(
-    weights: np.ndarray,
-    input: np.ndarray,
-    ids: np.ndarray,
-) -> np.ndarray:
-    """Expert-selected matrix multiply.
-
-    Dynamically selects expert weight matrices based on indices and performs
-    batched matrix multiplication. Core primitive for MoE layers.
-
-    Args:
-        weights: Expert weight matrices [n_expert, n_out, n_in]
-        input: Input activations [n_in, n_expert_used, n_tokens]
-        ids: Expert indices [n_expert_used, n_tokens] (int32)
-
-    Returns:
-        Output [n_out, n_expert_used, n_tokens]
-
-    Reference: components/moe/mul_mat_id.mlir
-    """
-    n_expert, n_out, n_in = weights.shape
-    n_expert_used, n_tokens = ids.shape
-
-    # Gather: select expert matrices based on ids
-    # gathered shape: [n_expert_used, n_tokens, n_out, n_in]
-    gathered = weights[ids]
-
-    # Reshape input: [n_in, n_expert_used, n_tokens] -> [n_expert_used, n_tokens, n_in]
-    input_t = input.transpose(1, 2, 0)
-
-    # Batched matmul per (expert_used, token) pair
-    # gathered[e,t] @ input_t[e,t] for each e, t
-    # Using einsum: 'etoi,eti->eto' (matrix-vector product)
-    output = np.einsum("etoi,eti->eto", gathered, input_t)
-
-    # Transpose to [n_out, n_expert_used, n_tokens]
-    return output.transpose(2, 0, 1)
-
-
 def moe_ffn_block(
     input: np.ndarray,
     gate_inp_w: np.ndarray,
@@ -78,8 +39,6 @@ def moe_ffn_block(
     """
     from oracles.activation import swiglu
 
-    n_tokens = input.shape[0]
-
     # Step 1: Router logits [n_expert, n_tokens]
     logits = gate_inp_w @ input.T
 
@@ -101,28 +60,23 @@ def moe_ffn_block(
         weight_sums = top_weights.sum(axis=0, keepdims=True)
         top_weights = top_weights / weight_sums
 
-    # Step 5: Replicate input for each expert slot
-    # input is [n_tokens, n_embd], we want [n_embd, n_expert_used, n_tokens]
-    input_replicated = np.broadcast_to(
-        input.T[:, None, :], (n_embd, n_expert_used, n_tokens)  # [n_embd, 1, n_tokens]
-    ).copy()
+    # Step 5: Fused UP + GATE projection (single gather + matmul)
+    up_gate_w = np.concatenate([up_exps_w, gate_exps_w], axis=1)
+    gathered_up_gate = up_gate_w[top_indices.astype(np.int32)]
+    up_gate = np.einsum("etoi,it->oet", gathered_up_gate, input.T)
+    up, gate = up_gate[:n_ff], up_gate[n_ff:]
 
-    # Step 6: Expert UP projection
-    up = mul_mat_id(up_exps_w, input_replicated, top_indices.astype(np.int32))
-
-    # Step 7: Expert GATE projection
-    gate = mul_mat_id(gate_exps_w, input_replicated, top_indices.astype(np.int32))
-
-    # Step 8: SwiGLU activation
+    # Step 7: SwiGLU activation
     activated = swiglu(gate, up)
 
-    # Step 9: Expert DOWN projection
-    experts_out = mul_mat_id(down_exps_w, activated, top_indices.astype(np.int32))
+    # Step 8: Expert DOWN projection
+    gathered_down = down_exps_w[top_indices.astype(np.int32)]
+    experts_out = np.einsum("etoi,iet->oet", gathered_down, activated)
 
-    # Step 10: Apply weights [n_embd, n_expert_used, n_tokens] * [n_expert_used, n_tokens]
+    # Step 9: Apply weights [n_embd, n_expert_used, n_tokens] * [n_expert_used, n_tokens]
     experts_weighted = experts_out * top_weights[None, :, :]
 
-    # Step 11: Sum over expert dimension
+    # Step 10: Sum over expert dimension
     output_summed = experts_weighted.sum(axis=1)  # [n_embd, n_tokens]
 
     # Transpose to [n_tokens, n_embd]
