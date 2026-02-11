@@ -143,7 +143,7 @@ def _get_library_paths() -> list[str]:
         "attention/attention_gqa.mlir",
         "position/rope.mlir",
         "moe/moe_ffn_block.mlir",
-        "moe/mul_mat_id.mlir",
+        "moe/concat_gemm_id_silu.mlir",
         "activation/swiglu.mlir",
     ]
 

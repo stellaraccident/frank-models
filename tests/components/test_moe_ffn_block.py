@@ -9,10 +9,10 @@ from oracles.moe import moe_ffn_block as moe_ffn_block_oracle
 
 @pytest.fixture(scope="module")
 def moe_ffn_module(iree_cfg):
-    """Link moe_ffn_block with its dependencies (mul_mat_id, swiglu)."""
+    """Link moe_ffn_block with its dependencies (concat_gemm_id_silu, swiglu)."""
     return link_and_compile(
         main_path="moe/moe_ffn_block.mlir",
-        library_paths=["moe/mul_mat_id.mlir", "activation/swiglu.mlir"],
+        library_paths=["moe/concat_gemm_id_silu.mlir", "activation/swiglu.mlir"],
         iree_cfg=iree_cfg,
     )
 

@@ -6,6 +6,37 @@ Reference implementations matching MLIR semantics in components/moe/.
 import numpy as np
 
 
+def concat_gemm_id_silu(
+    input: np.ndarray,
+    up_exps_w: np.ndarray,
+    gate_exps_w: np.ndarray,
+    top_indices: np.ndarray,
+    n_ff: int,
+) -> np.ndarray:
+    """Concat + gather + GEMM with identity/SiLU split (SwiGLU).
+
+    Concatenates up and gate expert weights, gathers selected experts,
+    does matmul, splits result, and applies SwiGLU: gate * silu(up).
+
+    Args:
+        input: Token embeddings [n_embd, n_tokens] (transposed)
+        up_exps_w: Expert up projections [n_expert, n_ff, n_embd]
+        gate_exps_w: Expert gate projections [n_expert, n_ff, n_embd]
+        top_indices: Selected expert indices [n_expert_used, n_tokens]
+        n_ff: Feed-forward hidden dimension
+
+    Returns:
+        Activated output [n_ff, n_expert_used, n_tokens]
+    """
+    from oracles.activation import swiglu
+
+    up_gate_w = np.concatenate([up_exps_w, gate_exps_w], axis=1)
+    gathered_up_gate = up_gate_w[top_indices.astype(np.int32)]
+    up_gate = np.einsum("etoi,it->oet", gathered_up_gate, input)
+    up, gate = up_gate[:n_ff], up_gate[n_ff:]
+    return swiglu(gate, up)
+
+
 def moe_ffn_block(
     input: np.ndarray,
     gate_inp_w: np.ndarray,
@@ -37,8 +68,6 @@ def moe_ffn_block(
 
     Reference: components/moe/moe_ffn_block.mlir
     """
-    from oracles.activation import swiglu
-
     # Step 1: Router logits [n_expert, n_tokens]
     logits = gate_inp_w @ input.T
 
@@ -60,14 +89,8 @@ def moe_ffn_block(
         weight_sums = top_weights.sum(axis=0, keepdims=True)
         top_weights = top_weights / weight_sums
 
-    # Step 5: Fused UP + GATE projection (single gather + matmul)
-    up_gate_w = np.concatenate([up_exps_w, gate_exps_w], axis=1)
-    gathered_up_gate = up_gate_w[top_indices.astype(np.int32)]
-    up_gate = np.einsum("etoi,it->oet", gathered_up_gate, input.T)
-    up, gate = up_gate[:n_ff], up_gate[n_ff:]
-
-    # Step 7: SwiGLU activation
-    activated = swiglu(gate, up)
+    # Step 5: Fused UP + GATE projection with SwiGLU
+    activated = concat_gemm_id_silu(input.T, up_exps_w, gate_exps_w, top_indices, n_ff)
 
     # Step 8: Expert DOWN projection
     gathered_down = down_exps_w[top_indices.astype(np.int32)]
