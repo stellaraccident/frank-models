@@ -9,10 +9,10 @@ from oracles.moe import moe_ffn_block as moe_ffn_block_oracle
 
 @pytest.fixture(scope="module")
 def moe_ffn_module(iree_cfg):
-    """Link moe_ffn_block with its dependencies (mul_mat_id, swiglu)."""
+    """Link moe_ffn_block with its dependencies (concat_gemm_id_silu, swiglu)."""
     return link_and_compile(
         main_path="moe/moe_ffn_block.mlir",
-        library_paths=["moe/mul_mat_id.mlir", "activation/swiglu.mlir"],
+        library_paths=["moe/concat_gemm_id_silu.mlir", "activation/swiglu.mlir"],
         iree_cfg=iree_cfg,
     )
 
@@ -28,9 +28,9 @@ def test_basic_moe(moe_ffn_module):
     # Create random weights
     input = np.random.randn(n_tokens, n_embd).astype(np.float32) * 0.1
     gate_inp_w = np.random.randn(n_expert, n_embd).astype(np.float32) * 0.1
-    up_exps_w = np.random.randn(n_ff, n_embd, n_expert).astype(np.float32) * 0.1
-    gate_exps_w = np.random.randn(n_ff, n_embd, n_expert).astype(np.float32) * 0.1
-    down_exps_w = np.random.randn(n_embd, n_ff, n_expert).astype(np.float32) * 0.1
+    up_exps_w = np.random.randn(n_expert, n_ff, n_embd).astype(np.float32) * 0.1
+    gate_exps_w = np.random.randn(n_expert, n_ff, n_embd).astype(np.float32) * 0.1
+    down_exps_w = np.random.randn(n_expert, n_embd, n_ff).astype(np.float32) * 0.1
 
     normalize_weights = False
 
@@ -72,9 +72,9 @@ def test_moe_with_normalization(moe_ffn_module):
 
     input = np.random.randn(n_tokens, n_embd).astype(np.float32) * 0.1
     gate_inp_w = np.random.randn(n_expert, n_embd).astype(np.float32) * 0.1
-    up_exps_w = np.random.randn(n_ff, n_embd, n_expert).astype(np.float32) * 0.1
-    gate_exps_w = np.random.randn(n_ff, n_embd, n_expert).astype(np.float32) * 0.1
-    down_exps_w = np.random.randn(n_embd, n_ff, n_expert).astype(np.float32) * 0.1
+    up_exps_w = np.random.randn(n_expert, n_ff, n_embd).astype(np.float32) * 0.1
+    gate_exps_w = np.random.randn(n_expert, n_ff, n_embd).astype(np.float32) * 0.1
+    down_exps_w = np.random.randn(n_expert, n_embd, n_ff).astype(np.float32) * 0.1
 
     normalize_weights = True
 
@@ -116,9 +116,9 @@ def test_single_expert(moe_ffn_module):
 
     input = np.random.randn(n_tokens, n_embd).astype(np.float32) * 0.1
     gate_inp_w = np.random.randn(n_expert, n_embd).astype(np.float32) * 0.1
-    up_exps_w = np.random.randn(n_ff, n_embd, n_expert).astype(np.float32) * 0.1
-    gate_exps_w = np.random.randn(n_ff, n_embd, n_expert).astype(np.float32) * 0.1
-    down_exps_w = np.random.randn(n_embd, n_ff, n_expert).astype(np.float32) * 0.1
+    up_exps_w = np.random.randn(n_expert, n_ff, n_embd).astype(np.float32) * 0.1
+    gate_exps_w = np.random.randn(n_expert, n_ff, n_embd).astype(np.float32) * 0.1
+    down_exps_w = np.random.randn(n_expert, n_embd, n_ff).astype(np.float32) * 0.1
 
     normalize_weights = False
 
@@ -161,9 +161,9 @@ def test_mixtral_like_dims(moe_ffn_module):
 
     input = np.random.randn(n_tokens, n_embd).astype(np.float32) * 0.1
     gate_inp_w = np.random.randn(n_expert, n_embd).astype(np.float32) * 0.1
-    up_exps_w = np.random.randn(n_ff, n_embd, n_expert).astype(np.float32) * 0.1
-    gate_exps_w = np.random.randn(n_ff, n_embd, n_expert).astype(np.float32) * 0.1
-    down_exps_w = np.random.randn(n_embd, n_ff, n_expert).astype(np.float32) * 0.1
+    up_exps_w = np.random.randn(n_expert, n_ff, n_embd).astype(np.float32) * 0.1
+    gate_exps_w = np.random.randn(n_expert, n_ff, n_embd).astype(np.float32) * 0.1
+    down_exps_w = np.random.randn(n_expert, n_embd, n_ff).astype(np.float32) * 0.1
 
     normalize_weights = False  # Mixtral doesn't normalize
 

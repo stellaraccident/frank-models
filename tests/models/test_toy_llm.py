@@ -113,13 +113,13 @@ def generate_toy_params(seed: int = 42) -> dict[str, np.ndarray]:
             (cfg["n_expert"], cfg["n_embd"])
         ).astype(np.float32)
         params[f"{prefix}.ffn_up_exps.weight"] = rng.standard_normal(
-            (cfg["n_ff"], cfg["n_embd"], cfg["n_expert"])
+            (cfg["n_expert"], cfg["n_ff"], cfg["n_embd"])
         ).astype(np.float32)
         params[f"{prefix}.ffn_gate_exps.weight"] = rng.standard_normal(
-            (cfg["n_ff"], cfg["n_embd"], cfg["n_expert"])
+            (cfg["n_expert"], cfg["n_ff"], cfg["n_embd"])
         ).astype(np.float32)
         params[f"{prefix}.ffn_down_exps.weight"] = rng.standard_normal(
-            (cfg["n_embd"], cfg["n_ff"], cfg["n_expert"])
+            (cfg["n_expert"], cfg["n_embd"], cfg["n_ff"])
         ).astype(np.float32)
 
     return params
@@ -143,7 +143,7 @@ def _get_library_paths() -> list[str]:
         "attention/attention_gqa.mlir",
         "position/rope.mlir",
         "moe/moe_ffn_block.mlir",
-        "moe/mul_mat_id.mlir",
+        "moe/concat_gemm_id_silu.mlir",
         "activation/swiglu.mlir",
     ]
 
